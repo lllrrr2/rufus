@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * Drive access function calls
- * Copyright © 2011-2023 Pete Batard <pete@akeo.ie>
+ * Copyright © 2011-2025 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -36,12 +36,13 @@
 #define XP_ESP                              0x02
 #define XP_UEFI_NTFS                        0x04
 #define XP_COMPAT                           0x08
-#define XP_CASPER                           0x10
+#define XP_PERSISTENCE                      0x10
 
 #define PI_MAIN                             0
 #define PI_ESP                              1
 #define PI_CASPER                           2
-#define PI_MAX                              3
+#define PI_UEFI_NTFS                        3
+#define PI_MAX                              4
 
 // The following should match VDS_FSOF_FLAGS as much as possible
 #define FP_FORCE                            0x00000001
@@ -51,29 +52,14 @@
 #define FP_LARGE_FAT32                      0x00010000
 #define FP_NO_BOOT                          0x00020000
 #define FP_CREATE_PERSISTENCE_CONF          0x00040000
+#define FP_NO_PROGRESS                      0x00080000
 
 #define FILE_FLOPPY_DISKETTE                0x00000004
 
 #define VDS_RESCAN_REFRESH                  0x00000001
 #define VDS_RESCAN_REENUMERATE              0x00000002
 
-#define VDS_SET_ERROR(hr) do { if (hr != S_OK) { SetLastError((DWORD)hr); FormatStatus = ERROR_SEVERITY_ERROR|FAC(FACILITY_STORAGE)|ERROR_GEN_FAILURE; } } while(0)
-
-#if !defined(__MINGW32__)
-typedef enum _FSINFOCLASS {
-	FileFsVolumeInformation = 1,
-	FileFsLabelInformation,
-	FileFsSizeInformation,
-	FileFsDeviceInformation,
-	FileFsAttributeInformation,
-	FileFsControlInformation,
-	FileFsFullSizeInformation,
-	FileFsObjectIdInformation,
-	FileFsDriverPathInformation,
-	FileFsVolumeFlagsInformation,
-	FileFsMaximumInformation
-} FS_INFORMATION_CLASS, *PFS_INFORMATION_CLASS;
-#endif
+#define VDS_SET_ERROR(hr) do { if (hr != S_OK) { SetLastError((DWORD)hr); ErrorStatus = RUFUS_ERROR(ERROR_GEN_FAILURE); } } while(0)
 
 /* We need a redef of these MS structure */
 typedef struct {
@@ -347,8 +333,7 @@ typedef struct _DRIVE_LAYOUT_INFORMATION_EX4 {
 } DRIVE_LAYOUT_INFORMATION_EX4, *PDRIVE_LAYOUT_INFORMATION_EX4;
 
 static __inline BOOL UnlockDrive(HANDLE hDrive) {
-	DWORD size;
-	return DeviceIoControl(hDrive, FSCTL_UNLOCK_VOLUME, NULL, 0, NULL, 0, &size, NULL);
+	return DeviceIoControl(hDrive, FSCTL_UNLOCK_VOLUME, NULL, 0, NULL, 0, NULL, NULL);
 }
 #define safe_unlockclose(h) do {if ((h != INVALID_HANDLE_VALUE) && (h != NULL)) {UnlockDrive(h); CloseHandle(h); h = INVALID_HANDLE_VALUE;}} while(0)
 
@@ -362,8 +347,11 @@ typedef struct {
 	MEDIA_TYPE MediaType;
 	int PartitionStyle;
 	int nPartitions;	// number of partitions we actually care about
-	uint64_t PartitionOffset[MAX_PARTITIONS];
-	uint64_t PartitionSize[MAX_PARTITIONS];
+	struct {
+		wchar_t Name[36];
+		uint64_t Offset;
+		uint64_t Size;
+	} Partition[MAX_PARTITIONS];
 	int FSType;
 	char proposed_label[16];
 	BOOL has_protective_mbr;
@@ -374,7 +362,7 @@ typedef struct {
 	} ClusterSize[FS_MAX];
 } RUFUS_DRIVE_INFO;
 extern RUFUS_DRIVE_INFO SelectedDrive;
-extern uint64_t partition_offset[PI_MAX];
+extern int partition_index[PI_MAX];
 
 BOOL SetAutoMount(BOOL enable);
 BOOL GetAutoMount(BOOL* enabled);
@@ -395,6 +383,7 @@ BOOL GetDriveLetters(DWORD DriveIndex, char* drive_letters);
 UINT GetDriveTypeFromIndex(DWORD DriveIndex);
 char GetUnusedDriveLetter(void);
 BOOL IsDriveLetterInUse(const char drive_letter);
+BOOL IsSourceImageLocatedOnTargetDrive(DWORD DriveIndex);
 char RemoveDriveLetters(DWORD DriveIndex, BOOL bUseLast, BOOL bSilent);
 BOOL GetDriveLabel(DWORD DriveIndex, char* letters, char** label, BOOL bSilent);
 uint64_t GetDriveSize(DWORD DriveIndex);
@@ -419,5 +408,8 @@ BOOL CyclePort(int index);
 int CycleDevice(int index);
 BOOL RefreshLayout(DWORD DriveIndex);
 BOOL GetOpticalMedia(IMG_SAVE* img_save);
-uint64_t GetEspOffset(DWORD DriveIndex);
+int64_t GetEspOffset(HANDLE hPhysical);
 BOOL ToggleEsp(DWORD DriveIndex, uint64_t PartitionOffset);
+const char* GetFsName(HANDLE hPhysical, LARGE_INTEGER StartingOffset);
+BOOL IsMsDevDrive(DWORD DriveIndex);
+BOOL IsFilteredDrive(DWORD DriveIndex);

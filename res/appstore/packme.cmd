@@ -3,6 +3,9 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
 
+rem if set, this will override the version for the package
+rem set VERSION_OVERRIDE=4.4.2104.0
+
 goto main
 
 :ReplaceTokenInFile
@@ -24,9 +27,9 @@ del /q *.map >NUL 2>&1
 
 set WDK_PATH=C:\Program Files (x86)\Windows Kits\10\bin\10.0.22000.0\x64
 set ZIP_PATH=C:\Program Files\7-Zip
-set SIGNATURE_SHA1=3dbc3a2a0e9ce8803b422cfdbc60acd33164965d
+set SIGNATURE_SHA1=fc4686753937a93fdcd48c2bb4375e239af92dcb
 set MANIFEST=AppxManifest.xml
-set ARCHS=x86 x64 arm arm64
+set ARCHS=x86 x64 arm64
 set DEFAULT_SCALE=200
 set OTHER_SCALES=100 125 150 400
 set SCALED_IMAGES=LargeTile SmallTile Square44x44Logo Square150x150Logo StoreLogo Wide310x150Logo
@@ -66,18 +69,36 @@ for %%a in (%ARCHS%) do (
   )
 )
 
+rem Use our own get_pe_info executable - source is in this directory
+if not exist ..\get_pe_info.exe (
+  echo ..\get_pe_info.exe must exist in the parent directory. Compile it with MinGW.
+  goto out
+)
+
+rem Make sure we're not trying to create a package from an ALPHA or BETA version!
+..\get_pe_info.exe -i rufus_x64.exe | findstr /C:"ALPHA" 1>nul && (
+  echo Alpha version detected - ABORTED
+  goto out
+)
+..\get_pe_info.exe -i rufus_x64.exe | findstr /C:"BETA" 1>nul && (
+  echo Beta version detected - ABORTED
+  goto out
+)
+
 rem Populate the version from the executable
-set target=%~dp0rufus_x64.exe
-set target=%target:\=\\%
-wmic datafile where "name='%target%'" get version | find /v "Version" > version.txt
-set /p VERSION=<version.txt
-set VERSION=%VERSION: =%
-del version.txt
+if "%VERSION_OVERRIDE%"=="" (
+  ..\get_pe_info.exe -v rufus_x64.exe > version.txt
+  set /p VERSION=<version.txt
+  del version.txt
+) else (
+  echo WARNING: Forcing version to %VERSION_OVERRIDE%
+  set VERSION=%VERSION_OVERRIDE%
+)
 
 echo Will create %VERSION% AppStore Bundle
 pause
 
-"%WDK_PATH%\signtool" sign /v /sha1 %SIGNATURE_SHA1% /fd SHA256 /tr http://sha256timestamp.ws.symantec.com/sha256/timestamp /td SHA256 *.exe
+"%WDK_PATH%\signtool" sign /v /sha1 %SIGNATURE_SHA1% /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 *.exe
 if ERRORLEVEL 1 goto out
 
 echo [Files]> bundle.map

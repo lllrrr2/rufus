@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * PKI functions (code signing, etc.)
- * Copyright © 2015-2023 Pete Batard <pete@akeo.ie>
+ * Copyright © 2015-2026 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -260,8 +260,8 @@ const char* WinPKIErrorString(void)
 	}
 }
 
-// Mostly from https://support.microsoft.com/en-us/kb/323809
-char* GetSignatureName(const char* path, const char* country_code, BOOL bSilent)
+// Mostly from https://support.microsoft.com/kb/323809
+char* GetSignatureName(const char* path, const char* country_code, uint8_t* thumbprint, BOOL bSilent)
 {
 	static char szSubjectName[128];
 	char szCountry[3] = "__";
@@ -271,9 +271,9 @@ char* GetSignatureName(const char* path, const char* country_code, BOOL bSilent)
 	HCERTSTORE hStore = NULL;
 	HCRYPTMSG hMsg = NULL;
 	PCCERT_CONTEXT pCertContext = NULL;
-	DWORD dwSize, dwEncoding, dwContentType, dwFormatType;
+	DWORD dwSize, dwEncoding, dwContentType, dwFormatType, dwSignerInfoSize = 0;
 	PCMSG_SIGNER_INFO pSignerInfo = NULL;
-	DWORD dwSignerInfo = 0;
+	// TODO: Do we really need CertInfo? Or can we just reference pSignerInfo?
 	CERT_INFO CertInfo = { 0 };
 	SPROG_PUBLISHERINFO ProgPubInfo = { 0 };
 	wchar_t *szFileName;
@@ -311,21 +311,21 @@ char* GetSignatureName(const char* path, const char* country_code, BOOL bSilent)
 		goto out;
 
 	// Get signer information size.
-	r = CryptMsgGetParam(hMsg, CMSG_SIGNER_INFO_PARAM, 0, NULL, &dwSignerInfo);
+	r = CryptMsgGetParam(hMsg, CMSG_SIGNER_INFO_PARAM, 0, NULL, &dwSignerInfoSize);
 	if (!r) {
 		uprintf("PKI: Failed to get signer size: %s", WinPKIErrorString());
 		goto out;
 	}
 
 	// Allocate memory for signer information.
-	pSignerInfo = (PCMSG_SIGNER_INFO)calloc(dwSignerInfo, 1);
+	pSignerInfo = (PCMSG_SIGNER_INFO)calloc(dwSignerInfoSize, 1);
 	if (!pSignerInfo) {
 		uprintf("PKI: Could not allocate memory for signer information");
 		goto out;
 	}
 
 	// Get Signer Information.
-	r = CryptMsgGetParam(hMsg, CMSG_SIGNER_INFO_PARAM, 0, (PVOID)pSignerInfo, &dwSignerInfo);
+	r = CryptMsgGetParam(hMsg, CMSG_SIGNER_INFO_PARAM, 0, (PVOID)pSignerInfo, &dwSignerInfoSize);
 	if (!r) {
 		uprintf("PKI: Failed to get signer information: %s", WinPKIErrorString());
 		goto out;
@@ -334,11 +334,20 @@ char* GetSignatureName(const char* path, const char* country_code, BOOL bSilent)
 	// Search for the signer certificate in the temporary certificate store.
 	CertInfo.Issuer = pSignerInfo->Issuer;
 	CertInfo.SerialNumber = pSignerInfo->SerialNumber;
-
 	pCertContext = CertFindCertificateInStore(hStore, ENCODING, 0, CERT_FIND_SUBJECT_CERT, (PVOID)&CertInfo, NULL);
 	if (!pCertContext) {
-		uprintf("PKI: Failed to locate signer certificate in temporary store: %s", WinPKIErrorString());
+		uprintf("PKI: Failed to locate signer certificate in store: %s", WinPKIErrorString());
 		goto out;
+	}
+
+	// Get the thumbprint if requested
+	if (thumbprint != NULL) {
+		dwSize = SHA1_HASHSIZE;
+		if (!CryptHashCertificate(0, CALG_SHA1, 0, pCertContext->pbCertEncoded,
+			pCertContext->cbCertEncoded, thumbprint, &dwSize)) {
+			uprintf("PKI: Failed to compute the thumbprint: %s", WinPKIErrorString());
+			goto out;
+		}
 	}
 
 	// If a country code is provided, validate that the certificate we have is for the same country
@@ -383,6 +392,109 @@ out:
 	if (hMsg != NULL)
 		CryptMsgClose(hMsg);
 	return p;
+}
+
+// Fills the certificate's name and thumbprint.
+// Tries the issuer first, and if none is available, falls back to current cert.
+// Returns 0 for unsigned, -1 on error, 1 for signer or 2 for issuer.
+int GetIssuerCertificateInfo(uint8_t* cert, cert_info_t* info)
+{
+	int ret = 0;
+	DWORD dwSize, dwEncoding, dwContentType, dwFormatType, dwSignerInfoSize = 0;
+	WIN_CERTIFICATE* pWinCert = (WIN_CERTIFICATE*)cert;
+	CRYPT_DATA_BLOB signedDataBlob;
+	HCERTSTORE hStore = NULL;
+	HCRYPTMSG hMsg = NULL;
+	PCMSG_SIGNER_INFO pSignerInfo = NULL;
+	PCCERT_CONTEXT pCertContext[2] = { NULL, NULL };
+	PCCERT_CHAIN_CONTEXT pChainContext = NULL;
+	CERT_CHAIN_PARA chainPara;
+	int CertIndex = 0;
+
+	if (info == NULL)
+		return -1;
+	if (pWinCert == NULL || pWinCert->dwLength <= offsetof(WIN_CERTIFICATE, bCertificate))
+		return 0;
+
+	// Get message handle and store handle from the signed file.
+	// NB: dwLength includes the size of the WIN_CERTIFICATE header.
+	signedDataBlob.cbData = pWinCert->dwLength - offsetof(WIN_CERTIFICATE, bCertificate);
+	signedDataBlob.pbData = pWinCert->bCertificate;
+	if (!CryptQueryObject(CERT_QUERY_OBJECT_BLOB, &signedDataBlob,
+		CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED, CERT_QUERY_FORMAT_FLAG_BINARY,
+		0, &dwEncoding, &dwContentType, &dwFormatType, &hStore, &hMsg, NULL)) {
+		uprintf("PKI: Failed to get signature: %s", WinPKIErrorString());
+		goto out;
+	}
+
+	// Get signer information size.
+	if (!CryptMsgGetParam(hMsg, CMSG_SIGNER_CERT_INFO_PARAM, 0, NULL, &dwSignerInfoSize)) {
+		uprintf("PKI: Failed to get signer size: %s", WinPKIErrorString());
+		goto out;
+	}
+
+	// Allocate memory for signer information.
+	pSignerInfo = (PCMSG_SIGNER_INFO)calloc(dwSignerInfoSize, 1);
+	if (pSignerInfo == NULL) {
+		uprintf("PKI: Could not allocate memory for signer information");
+		goto out;
+	}
+
+	// Get Signer Information.
+	if (!CryptMsgGetParam(hMsg, CMSG_SIGNER_CERT_INFO_PARAM, 0, pSignerInfo, &dwSignerInfoSize)) {
+		uprintf("PKI: Failed to get signer info: %s", WinPKIErrorString());
+		goto out;
+	}
+
+	// Search for the signer certificate in the temporary certificate store.
+	pCertContext[0] = CertFindCertificateInStore(hStore, ENCODING, 0, CERT_FIND_SUBJECT_CERT, (PVOID)pSignerInfo, NULL);
+	if (pCertContext[0] == NULL) {
+		uprintf("PKI: Failed to locate signer certificate in store: %s", WinPKIErrorString());
+		goto out;
+	}
+
+	// Build a certificate chain to get the issuer (CA) certificate.
+	memset(&chainPara, 0, sizeof(chainPara));
+	chainPara.cbSize = sizeof(CERT_CHAIN_PARA);
+	if (!CertGetCertificateChain(NULL, pCertContext[0], NULL, hStore, &chainPara,
+		CERT_CHAIN_CACHE_ONLY_URL_RETRIEVAL | CERT_CHAIN_REVOCATION_CHECK_CACHE_ONLY, NULL, &pChainContext)) {
+		uprintf("PKI: Failed to build certificate chain. Error code: %s", WinPKIErrorString());
+		goto out;
+	}
+
+	// Try to get the issuer's certificate (second certificate in the chain) if available
+	if (pChainContext->cChain > 0 && pChainContext->rgpChain[0]->cElement > 1) {
+		pCertContext[1] = pChainContext->rgpChain[0]->rgpElement[1]->pCertContext;
+		CertIndex = 1;
+	}
+
+	// Isolate the signing certificate subject name
+	dwSize = CertGetNameStringA(pCertContext[CertIndex], CERT_NAME_ATTR_TYPE, 0, szOID_COMMON_NAME,
+		info->name, sizeof(info->name));
+	if (dwSize <= 1) {
+		uprintf("PKI: Failed to get Subject Name");
+		goto out;
+	}
+
+	dwSize = SHA1_HASHSIZE;
+	if (!CryptHashCertificate(0, CALG_SHA1, 0, pCertContext[CertIndex]->pbCertEncoded,
+		pCertContext[CertIndex]->cbCertEncoded, info->thumbprint, &dwSize)) {
+		uprintf("PKI: Failed to compute the thumbprint: %s", WinPKIErrorString());
+		goto out;
+	}
+	ret = CertIndex + 1;
+
+out:
+	safe_free(pSignerInfo);
+	if (pCertContext[1] != NULL)
+		CertFreeCertificateContext(pCertContext[1]);
+	if (pCertContext[0] != NULL)
+		CertFreeCertificateContext(pCertContext[0]);
+	if (hStore != NULL)
+		CertCloseStore(hStore, 0);
+	if (hMsg != NULL)
+		CryptMsgClose(hMsg);
+	return ret;
 }
 
 // The timestamping authorities we use are RFC 3161 compliant
@@ -523,9 +635,8 @@ uint64_t GetSignatureTimeStamp(const char* path)
 	HMODULE hm;
 	HCERTSTORE hStore = NULL;
 	HCRYPTMSG hMsg = NULL;
-	DWORD dwSize, dwEncoding, dwContentType, dwFormatType;
+	DWORD dwSize, dwEncoding, dwContentType, dwFormatType, dwSignerInfoSize = 0;
 	PCMSG_SIGNER_INFO pSignerInfo = NULL;
-	DWORD dwSignerInfo = 0;
 	wchar_t *szFileName;
 	uint64_t timestamp = 0ULL, nested_timestamp;
 
@@ -559,21 +670,21 @@ uint64_t GetSignatureTimeStamp(const char* path)
 	}
 
 	// Get signer information size.
-	r = CryptMsgGetParam(hMsg, CMSG_SIGNER_INFO_PARAM, 0, NULL, &dwSignerInfo);
+	r = CryptMsgGetParam(hMsg, CMSG_SIGNER_INFO_PARAM, 0, NULL, &dwSignerInfoSize);
 	if (!r) {
 		uprintf("PKI: Failed to get signer size: %s", WinPKIErrorString());
 		goto out;
 	}
 
 	// Allocate memory for signer information.
-	pSignerInfo = (PCMSG_SIGNER_INFO)calloc(dwSignerInfo, 1);
+	pSignerInfo = (PCMSG_SIGNER_INFO)calloc(dwSignerInfoSize, 1);
 	if (!pSignerInfo) {
 		uprintf("PKI: Could not allocate memory for signer information");
 		goto out;
 	}
 
 	// Get Signer Information.
-	r = CryptMsgGetParam(hMsg, CMSG_SIGNER_INFO_PARAM, 0, (PVOID)pSignerInfo, &dwSignerInfo);
+	r = CryptMsgGetParam(hMsg, CMSG_SIGNER_INFO_PARAM, 0, (PVOID)pSignerInfo, &dwSignerInfoSize);
 	if (!r) {
 		uprintf("PKI: Failed to get signer information: %s", WinPKIErrorString());
 		goto out;
@@ -597,7 +708,7 @@ uint64_t GetSignatureTimeStamp(const char* path)
 		uprintf("Note: '%s' has nested timestamp %s", (path==NULL)?mpath:path, TimestampToHumanReadable(nested_timestamp));
 	if ((timestamp != 0ULL) && (nested_timestamp != 0ULL)) {
 		if (_abs64(nested_timestamp - timestamp) > 100) {
-			uprintf("PKI: Signature timestamp and nested timestamp differ by more than a minute. "
+			uprintf("PKI: Signature timestamp (%lld) and nested timestamp (%lld) differ by more than a minute. "
 				"This could indicate something very nasty...", timestamp, nested_timestamp);
 			timestamp = 0ULL;
 		}
@@ -629,11 +740,11 @@ LONG ValidateSignature(HWND hDlg, const char* path)
 	// Check the signature name. Make it specific enough (i.e. don't simply check for "Akeo")
 	// so that, besides hacking our server, it'll place an extra hurdle on any malicious entity
 	// into also fooling a C.A. to issue a certificate that passes our test.
-	signature_name = GetSignatureName(path, cert_country, (hDlg == INVALID_HANDLE_VALUE));
+	signature_name = GetSignatureName(path, cert_country, NULL, (hDlg == INVALID_HANDLE_VALUE));
 	if (signature_name == NULL) {
 		uprintf("PKI: Could not get signature name");
 		if (hDlg != INVALID_HANDLE_VALUE)
-			MessageBoxExU(hDlg, lmprintf(MSG_284), lmprintf(MSG_283), MB_OK | MB_ICONERROR | MB_IS_RTL, selected_langid);
+			Notification(MB_OK | MB_ICONERROR, lmprintf(MSG_283), lmprintf(MSG_284));
 		return TRUST_E_NOSIGNATURE;
 	}
 	for (i = 0; i < ARRAYSIZE(cert_name); i++) {
@@ -642,9 +753,8 @@ LONG ValidateSignature(HWND hDlg, const char* path)
 	}
 	if (i >= ARRAYSIZE(cert_name)) {
 		uprintf("PKI: Signature '%s' is unexpected...", signature_name);
-		if ((hDlg == INVALID_HANDLE_VALUE) || (MessageBoxExU(hDlg,
-			lmprintf(MSG_285, signature_name), lmprintf(MSG_283),
-			MB_YESNO | MB_ICONWARNING | MB_IS_RTL, selected_langid) != IDYES))
+		if ((hDlg == INVALID_HANDLE_VALUE) || (Notification(MB_YESNO | MB_ICONWARNING,
+			lmprintf(MSG_283), lmprintf(MSG_285, signature_name)) != IDYES))
 			return TRUST_E_EXPLICIT_DISTRUST;
 	}
 
@@ -652,7 +762,7 @@ LONG ValidateSignature(HWND hDlg, const char* path)
 	trust_file.pcwszFilePath = utf8_to_wchar(path);
 	if (trust_file.pcwszFilePath == NULL) {
 		uprintf("PKI: Unable to convert '%s' to UTF16", path);
-		return ERROR_SEVERITY_ERROR | FAC(FACILITY_CERT) | ERROR_NOT_ENOUGH_MEMORY;
+		return RUFUS_ERROR(ERROR_NOT_ENOUGH_MEMORY);
 	}
 
 	trust_data.cbStruct = sizeof(trust_data);
@@ -693,18 +803,18 @@ LONG ValidateSignature(HWND hDlg, const char* path)
 			}
 		}
 		if ((r != ERROR_SUCCESS) && (force_update < 2))
-			MessageBoxExU(hDlg, lmprintf(MSG_300), lmprintf(MSG_299), MB_OK | MB_ICONERROR | MB_IS_RTL, selected_langid);
+			Notification(MB_OK | MB_ICONERROR, lmprintf(MSG_299), lmprintf(MSG_300));
 		break;
 	case TRUST_E_NOSIGNATURE:
 		// Should already have been reported, but since we have a custom message for it...
 		uprintf("PKI: File does not appear to be signed: %s", WinPKIErrorString());
 		if (hDlg != INVALID_HANDLE_VALUE)
-			MessageBoxExU(hDlg, lmprintf(MSG_284), lmprintf(MSG_283), MB_OK | MB_ICONERROR | MB_IS_RTL, selected_langid);
+			Notification(MB_OK | MB_ICONERROR, lmprintf(MSG_283), lmprintf(MSG_284));
 		break;
 	default:
 		uprintf("PKI: Failed to validate signature: %s", WinPKIErrorString());
 		if (hDlg != INVALID_HANDLE_VALUE)
-			MessageBoxExU(hDlg, lmprintf(MSG_240), lmprintf(MSG_283), MB_OK | MB_ICONERROR | MB_IS_RTL, selected_langid);
+			Notification(MB_OK | MB_ICONERROR, lmprintf(MSG_283), lmprintf(MSG_240));
 		break;
 	}
 
@@ -784,127 +894,17 @@ BOOL ValidateOpensslSignature(BYTE* pbBuffer, DWORD dwBufferLen, BYTE* pbSignatu
 		uprintf("Signature validation failed: %s", WinPKIErrorString());
 	}
 
+	// Un-reverse the signature bytes, so we can save it for reuse
+	for (i = 0, j = dwSigLen - 1; i < j; i++, j--) {
+		t = pbSignature[i];
+		pbSignature[i] = pbSignature[j];
+		pbSignature[j] = t;
+	}
+
 out:
 	if (hHash)
 		CryptDestroyHash(hHash);
 	if (hProv)
 		CryptReleaseContext(hProv, 0);
-	return r;
-}
-
-// The following SkuSiPolicy.p7b parsing code is derived from:
-// https://gist.github.com/mattifestation/92e545bf1ee5b68eeb71d254cec2f78e
-// by Matthew Graeber, with contributions by James Forshaw.
-BOOL ParseSKUSiPolicy(void)
-{
-	char path[MAX_PATH];
-	wchar_t* wpath = NULL;
-	BOOL r = FALSE;
-	DWORD i, dwEncoding, dwContentType, dwFormatType;
-	DWORD dwPolicySize = 0, dwBaseIndex = 0, dwSizeCount;
-	HCRYPTMSG hMsg = NULL;
-	CRYPT_DATA_BLOB pkcsData = { 0 };
-	DWORD* pdwEkuRules;
-	BYTE* pbRule;
-	CIHeader* Header;
-	CIFileRuleHeader* FileRuleHeader;
-	CIFileRuleData* FileRuleData;
-
-	pe256ssp_size = 0;
-	safe_free(pe256ssp);
-	// Must use sysnative for WOW
-	static_sprintf(path, "%s\\SecureBootUpdates\\SKUSiPolicy.p7b", sysnative_dir);
-	wpath = utf8_to_wchar(path);
-	if (wpath == NULL)
-		goto out;
-
-	r = CryptQueryObject(CERT_QUERY_OBJECT_FILE, wpath, CERT_QUERY_CONTENT_FLAG_ALL,
-		CERT_QUERY_FORMAT_FLAG_ALL, 0, &dwEncoding, &dwContentType, &dwFormatType, NULL,
-		&hMsg, NULL);
-	if (!r || dwContentType != CERT_QUERY_CONTENT_PKCS7_SIGNED)
-		goto out;
-
-	r = CryptMsgGetParam(hMsg, CMSG_CONTENT_PARAM, 0, NULL, &pkcsData.cbData);
-	if (!r || pkcsData.cbData == 0) {
-		uprintf("ParseSKUSiPolicy: Failed to retreive CMSG_CONTENT_PARAM size: %s", WindowsErrorString());
-		goto out;
-	}
-	pkcsData.pbData = malloc(pkcsData.cbData);
-	if (pkcsData.pbData == NULL)
-		goto out;
-	r = CryptMsgGetParam(hMsg, CMSG_CONTENT_PARAM, 0, pkcsData.pbData, &pkcsData.cbData);
-	if (!r) {
-		uprintf("ParseSKUSiPolicy: Failed to retreive CMSG_CONTENT_PARAM: %s", WindowsErrorString());
-		goto out;
-	}
-
-	// Now process the actual Security Policy content
-	if (pkcsData.pbData[0] == 4) {
-		dwPolicySize = pkcsData.pbData[1];
-		dwBaseIndex = 2;
-		if ((dwPolicySize & 0x80) == 0x80) {
-			dwSizeCount = dwPolicySize & 0x7F;
-			dwBaseIndex += dwSizeCount;
-			dwPolicySize = 0;
-			for (i = 0; i < dwSizeCount; i++) {
-				dwPolicySize = dwPolicySize << 8;
-				dwPolicySize = dwPolicySize | pkcsData.pbData[2 + i];
-			}
-		}
-	}
-
-	// Sanity checks
-	Header = (CIHeader*)&pkcsData.pbData[dwBaseIndex];
-	if (Header->HeaderLength + sizeof(uint32_t) != sizeof(CIHeader)) {
-		uprintf("ParseSKUSiPolicy: Unexpected Code Integrity Header size (0x%02x)", Header->HeaderLength);
-		goto out;
-	}
-	if (!CompareGUID(&Header->PolicyTypeGUID, &SKU_CODE_INTEGRITY_POLICY)) {
-		uprintf("ParseSKUSiPolicy: Unexpected Policy Type GUID %s", GuidToString(&Header->PolicyTypeGUID, TRUE));
-		goto out;
-	}
-
-	// Skip the EKU Rules
-	pdwEkuRules = (DWORD*) &pkcsData.pbData[dwBaseIndex + sizeof(CIHeader)];
-	for (i = 0; i < Header->EKURuleEntryCount; i++)
-		pdwEkuRules = &pdwEkuRules[(*pdwEkuRules + (2 * sizeof(DWORD) - 1)) / sizeof(DWORD)];
-
-	// Process the Files Rules
-	pbRule = (BYTE*)pdwEkuRules;
-	pe256ssp = malloc(Header->FileRuleEntryCount * PE256_HASHSIZE);
-	if (pe256ssp == NULL)
-		goto out;
-	for (i = 0; i < Header->FileRuleEntryCount; i++) {
-		FileRuleHeader = (CIFileRuleHeader*)pbRule;
-		pbRule = &pbRule[sizeof(CIFileRuleHeader)];
-		if (FileRuleHeader->FileNameLength != 0) {
-//			uprintf("%S", FileRuleHeader->FileName);
-			pbRule = &pbRule[((FileRuleHeader->FileNameLength + sizeof(DWORD) - 1) / sizeof(DWORD)) * sizeof(DWORD)];
-		}
-		FileRuleData = (CIFileRuleData*)pbRule;
-		if (FileRuleData->HashLength > 0x80) {
-			uprintf("ParseSKUSiPolicy: Unexpected hash length for entry %d (0x%02x)", i, FileRuleData->HashLength);
-			// We're probably screwed, so bail out
-			break;
-		}
-		//  We are only interested in 'DENY' type with PE256 hashes
-		if (FileRuleHeader->Type == CI_DENY && FileRuleData->HashLength == PE256_HASHSIZE) {
-			// Microsoft has the bad habit of duplicating entries - only add a hash if it's different from previous entry
-			if ((pe256ssp_size == 0) ||
-				(memcmp(&pe256ssp[(pe256ssp_size - 1) * PE256_HASHSIZE], FileRuleData->Hash, PE256_HASHSIZE) != 0)) {
-				memcpy(&pe256ssp[pe256ssp_size * PE256_HASHSIZE], FileRuleData->Hash, PE256_HASHSIZE);
-				pe256ssp_size++;
-			}
-		}
-		pbRule = &pbRule[sizeof(CIFileRuleData) + ((FileRuleData->HashLength + sizeof(DWORD) - 1) / sizeof(DWORD)) * sizeof(DWORD)];
-	}
-
-	r = TRUE;
-
-out:
-	if (hMsg != NULL)
-		CryptMsgClose(hMsg);
-	free(pkcsData.pbData);
-	free(wpath);
 	return r;
 }

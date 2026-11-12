@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * extfs formatting
- * Copyright © 2019-2021 Pete Batard <pete@akeo.ie>
+ * Copyright © 2019-2025 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -42,7 +42,6 @@ extern const char* FileSystemLabel[FS_MAX];
 extern io_manager nt_io_manager;
 extern DWORD ext2_last_winerror(DWORD default_error);
 static float ext2_percent_start = 0.0f, ext2_percent_share = 0.5f;
-const float ext2_max_marker = 80.0f;
 
 typedef struct {
 	uint64_t max_size;
@@ -178,7 +177,7 @@ const char* error_message(errcode_t error_code)
 		if ((error_code > EXT2_ET_BASE) && error_code < (EXT2_ET_BASE + 1000)) {
 			static_sprintf(error_string, "Unknown ext2fs error %ld (EXT2_ET_BASE + %ld)", error_code, error_code - EXT2_ET_BASE);
 		} else {
-			SetLastError((FormatStatus == 0) ? (ERROR_SEVERITY_ERROR | FAC(FACILITY_STORAGE) | (error_code & 0xFFFF)) : FormatStatus);
+			SetLastError((ErrorStatus == 0) ? RUFUS_ERROR(error_code & 0xFFFF) : ErrorStatus);
 			static_sprintf(error_string, "%s", WindowsErrorString());
 		}
 		return error_string;
@@ -187,16 +186,9 @@ const char* error_message(errcode_t error_code)
 
 errcode_t ext2fs_print_progress(int64_t cur_value, int64_t max_value)
 {
-	static int64_t last_value = -1;
-	if (max_value == 0)
-		return 0;
 	UpdateProgressWithInfo(OP_FORMAT, MSG_217, (uint64_t)((ext2_percent_start * max_value) + (ext2_percent_share * cur_value)), max_value);
-	cur_value = (int64_t)(((float)cur_value / (float)max_value) * min(ext2_max_marker, (float)max_value));
-	if (cur_value != last_value) {
-		last_value = cur_value;
-		uprintfs("+");
-	}
-	return IS_ERROR(FormatStatus) ? EXT2_ET_CANCEL_REQUESTED : 0;
+	uprint_progress((uint64_t)cur_value, (uint64_t)max_value);
+	return IS_ERROR(ErrorStatus) ? EXT2_ET_CANCEL_REQUESTED : 0;
 }
 
 const char* GetExtFsLabel(DWORD DriveIndex, uint64_t PartitionOffset)
@@ -223,7 +215,7 @@ const char* GetExtFsLabel(DWORD DriveIndex, uint64_t PartitionOffset)
 
 #define TEST_IMG_PATH               "\\??\\C:\\tmp\\disk.img"
 #define TEST_IMG_SIZE               4000		// Size in MB
-#define SET_EXT2_FORMAT_ERROR(x)    if (!IS_ERROR(FormatStatus)) FormatStatus = ext2_last_winerror(x)
+#define SET_EXT2_FORMAT_ERROR(x)    if (!IS_ERROR(ErrorStatus)) ErrorStatus = ext2_last_winerror(x)
 
 BOOL FormatExtFs(DWORD DriveIndex, uint64_t PartitionOffset, DWORD BlockSize, LPCSTR FSName, LPCSTR Label, DWORD Flags)
 {
@@ -273,7 +265,7 @@ BOOL FormatExtFs(DWORD DriveIndex, uint64_t PartitionOffset, DWORD BlockSize, LP
 	volume_name = GetExtPartitionName(DriveIndex, PartitionOffset);
 #endif
 	if ((volume_name == NULL) | (strlen(FSName) != 4) || (strncmp(FSName, "ext", 3) != 0)) {
-		FormatStatus = ERROR_SEVERITY_ERROR | FAC(FACILITY_STORAGE) | ERROR_INVALID_PARAMETER;
+		ErrorStatus = RUFUS_ERROR(ERROR_INVALID_PARAMETER);
 		goto out;
 	}
 	if (strchr(volume_name, ' ') != NULL)
@@ -387,7 +379,7 @@ BOOL FormatExtFs(DWORD DriveIndex, uint64_t PartitionOffset, DWORD BlockSize, LP
 	ext2_percent_start = 0.0f;
 	ext2_percent_share = (FSName[3] == '2') ? 1.0f : 0.5f;
 	uprintf("Creating %d inode sets: [1 marker = %0.1f set(s)]", ext2fs->group_desc_count,
-		max((float)ext2fs->group_desc_count / ext2_max_marker, 1.0f));
+		max((float)ext2fs->group_desc_count / MAX_MARKER, 1.0f));
 	for (i = 0; i < (int)ext2fs->group_desc_count; i++) {
 		if (ext2fs_print_progress((int64_t)i, (int64_t)ext2fs->group_desc_count))
 			goto out;
@@ -443,7 +435,7 @@ BOOL FormatExtFs(DWORD DriveIndex, uint64_t PartitionOffset, DWORD BlockSize, LP
 		journal_size = ext2fs_default_journal_size(ext2fs_blocks_count(ext2fs->super));
 		journal_size /= 2;	// That journal init is really killing us!
 		uprintf("Creating %d journal blocks: [1 marker = %0.1f block(s)]", journal_size,
-			max((float)journal_size / ext2_max_marker, 1.0f));
+			max((float)journal_size / MAX_MARKER, 1.0f));
 		// Even with EXT2_MKJOURNAL_LAZYINIT, this call is absolutely dreadful in terms of speed...
 		r = ext2fs_add_journal_inode(ext2fs, journal_size, EXT2_MKJOURNAL_NO_MNT_CHECK | ((Flags & FP_QUICK) ? EXT2_MKJOURNAL_LAZYINIT : 0));
 		uprintfs("\r\n");
@@ -491,7 +483,10 @@ BOOL FormatExtFs(DWORD DriveIndex, uint64_t PartitionOffset, DWORD BlockSize, LP
 
 	// Finally we can call close() to get the file system gets created
 	r = ext2fs_close(ext2fs);
-	if (r != 0) {
+	if (r == 0) {
+		// Make sure ext2fs isn't freed twice
+		ext2fs = NULL;
+	} else {
 		SET_EXT2_FORMAT_ERROR(ERROR_WRITE_FAULT);
 		uprintf("Could not create %s volume: %s", FSName, error_message(r));
 		goto out;

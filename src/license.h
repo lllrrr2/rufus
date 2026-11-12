@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * Licensing Data
- * Copyright © 2011-2023 Pete Batard <pete@akeo.ie>
+ * Copyright © 2011-2026 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -56,6 +56,10 @@ const char* additional_copyrights =
 "https://www.gnu.org/software/libcdio\\line\n"
 "GNU General Public License (GPL) v3 or later\\line\n"
 "\\line\n"
+"WIM image manipulation support from wimlib by Carl Thijssen and Eric Biggers:\\line\n"
+"https://wimlib.net\\line\n"
+"GNU General Public License (GPL) v3 or later\\line\n"
+"\\line\n"
 "Syslinux support from Syslinux by H. Peter Anvin et al.:\\line\n"
 "https://syslinux.org/\\line\n"
 "GNU General Public License (GPL) v2 or later\\line\n"
@@ -73,13 +77,17 @@ const char* additional_copyrights =
 "https://svn.reactos.org/reactos/trunk\\line\n"
 "GNU General Public License (GPL) v2 or later\\line\n"
 "\\line\n"
-"Bad blocks testing and ext2/ext3 formatting from e2fsprogs by Theodore T'so et al.:\\line\n"
+"Bad blocks testing and ext2/ext3 formatting from e2fsprogs by Theodore Ts'o et al.:\\line\n"
 "http://e2fsprogs.sourceforge.net/\\line\n"
 "GNU General Public License (GPL) v3 compatible\\line\n"
 "\\line\n"
 "Large FAT32 volume formatting from fat32format by Tom Thornhill:\\line\n"
 "http://www.ridgecrop.demon.co.uk/index.htm?fat32format.htm\\line\n"
 "GNU General Public License (GPL) v2 or later\\line\n"
+"\\line\n"
+"XML parsing support from ezxml by Aaron Voisine:\\line\n"
+"https://ezxml.sourceforge.net/\\line\n"
+"MIT license\\line\n"
 "\\line\n"
 "fmifs.dll usage based on Formatx by Mark Russinovich:\\line\n"
 "https://svn.reactos.org/reactos/trunk/reactos/dll/win32/fmifs\\line\n"
@@ -102,9 +110,11 @@ const char* additional_copyrights =
 "https://sourceforge.net/projects/smartmontools\\line\n"
 "GNU General Public License (GPL) v2 or later\\line\n"
 "\\line\n"
-"FS Type description from GNU fdisk:\\line\n"
+"Partition and FS Type identification from GNU fdisk and GPT fdisk:\\line\n"
 "https://www.gnu.org/software/fdisk\\line\n"
-"GNU General Public License (GPL) v3 or later\\line\n"
+"https://www.rodsbooks.com/gdisk\\line\n"
+"https://salsa.debian.org/debian/gdisk\\line\n"
+"GNU General Public License (GPL) v2 or later\\line\n"
 "\\line\n"
 "Speed/ETA computation from GNU wget:\\line\n"
 "https://www.gnu.org/software/wget\\line\n"
@@ -134,11 +144,6 @@ const char* additional_copyrights =
 "https://github.com/u-boot/u-boot\\line\n"
 "GNU General Public License (GPL) v2 or later\\line\n"
 "\\line\n"
-"SkuSiPolicy.p7b parsing derived from:\\line\n"
-"https://gist.github.com/mattifestation/92e545bf1ee5b68eeb71d254cec2f78e\\line\n"
-"by Matthew Graeber, with contributions by James Forshaw\\line\n"
-"BSD 3-Clause\\line\n"
-"\\line\n"
 "About and License dialogs inspired by WinSCP by Martin Prikryl\\line\n"
 "https://winscp.net/\\line\n"
 "GNU General Public License (GPL) v3 or later\\line\n"
@@ -147,9 +152,12 @@ const char* additional_copyrights =
 "https://tortoisesvn.net/, https://tortoisegit.org/\\line\n"
 "GNU General Public License (GPL) v2 or later\\line\n"
 "\\line\n"
-"Regular Expression handling from tiny-regex-c by kokke:\\line\n"
-"https://github.com/kokke/tiny-regex-c\\line\n"
-"Public Domain\\line\n"
+"Dark Mode support by ozone10\\line\n"
+"https://github.com/ozone10\\line\n"
+"\\line\n"
+"Regular Expression parser from tiny-regex-c by Jim Huang (jserv):\\line\n"
+"https://github.com/jserv/cregex\\line\n"
+"BSD 2-Clause\\line\n"
 "\\line\n"
 "All other references can be found in the source.\\line\n}";
 

@@ -17,6 +17,9 @@ enum {
 	/* (unsigned) cast suppresses "integer overflow in expression" warning */
 	XZ_MAGIC1a  = 256 * (unsigned)(256 * (256 * 0xfd + '7') + 'z') + 'X',
 	XZ_MAGIC2a  = 256 * 'Z' + 0,
+	ZSTD_MAGIC1 = 0x28B5,
+	ZSTD_MAGIC2 = 0x2FFD,
+	ZSTD_MAGIC  = 0x28B52FFD,
 #else
 	COMPRESS_MAGIC = 0x9d1f,
 	GZIP_MAGIC  = 0x8b1f,
@@ -25,6 +28,9 @@ enum {
 	XZ_MAGIC2   = 'z' + ('X' + ('Z' + 0 * 256) * 256) * 256,
 	XZ_MAGIC1a  = 0xfd + ('7' + ('z' + 'X' * 256) * 256) * 256,
 	XZ_MAGIC2a  = 'Z' + 0 * 256,
+	ZSTD_MAGIC1 = 0xB528,
+	ZSTD_MAGIC2 = 0xFD2F,
+	ZSTD_MAGIC  = 0xFD2FB528,
 #endif
 };
 
@@ -229,23 +235,28 @@ typedef struct transformer_state_t {
 	int      dst_fd;
 	const char *dst_dir;            /* if non-NULL, extract to dir */
 	char     *dst_name;
-	uint64_t dst_size;
+	int64_t  src_size;              /* size of the source archive */
+	int64_t  dst_size;              /* size of the uncompressed data, if available */
 	size_t   mem_output_size_max;   /* if non-zero, decompress to RAM instead of fd */
 	size_t   mem_output_size;
 	char     *mem_output_buf;
 
+	uint64_t bytes_total;           /* used in unzip code only, for directory extraction */
 	uint64_t bytes_out;
-	uint64_t bytes_in;  /* used in unzip code only: needs to know packed size */
+	uint64_t bytes_in;              /* used in unzip code only: needs to know packed size */
 	uint32_t crc32;
-	time_t   mtime;     /* gunzip code may set this on exit */
+	time_t   mtime;                 /* gunzip code may set this on exit */
 
-	union {             /* if we read magic, it's saved here */
+	union {                         /* if we read magic, it's saved here */
 		uint8_t b[8];
 		uint16_t b16[4];
 		uint32_t b32[2];
 	} magic;
 } transformer_state_t;
 
+typedef int64_t(*unpacker_t)(transformer_state_t* xstate);
+typedef int64_t(*get_uncompressed_size_t)(int fd);
+int64_t get_uncompressed_size(int fd, int type);
 void init_transformer_state(transformer_state_t *xstate) FAST_FUNC;
 ssize_t transformer_write(transformer_state_t *xstate, const void *buf, size_t bufsize) FAST_FUNC;
 ssize_t xtransformer_write(transformer_state_t *xstate, const void *buf, size_t bufsize) FAST_FUNC;
@@ -270,7 +281,7 @@ static inline int transformer_switch_file(transformer_state_t* xstate)
 			last_slash = i;
 	}
 	if (bled_switch != NULL)
-		bled_switch(dst, xstate->dst_size);
+		bled_switch(dst, xstate->bytes_total);
 	dst[last_slash] = 0;
 	bb_make_directory(dst, 0, 0);
 	dst[last_slash] = '/';
@@ -290,6 +301,7 @@ IF_DESKTOP(long long) int unpack_bz2_stream(transformer_state_t *xstate) FAST_FU
 IF_DESKTOP(long long) int unpack_lzma_stream(transformer_state_t *xstate) FAST_FUNC;
 IF_DESKTOP(long long) int unpack_xz_stream(transformer_state_t *xstate) FAST_FUNC;
 IF_DESKTOP(long long) int unpack_vtsi_stream(transformer_state_t *xstate) FAST_FUNC;
+IF_DESKTOP(long long) int unpack_zstd_stream(transformer_state_t *xstate) FAST_FUNC;
 
 char* append_ext(char *filename, const char *expected_ext) FAST_FUNC;
 int bbunpack(char **argv,

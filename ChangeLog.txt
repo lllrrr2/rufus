@@ -1,3 +1,144 @@
+o Version 4.16 (2026.11.??)
+    Finally work around the AMI NTFS driver bug, so that runtime UEFI media validation can work on the millions of PCs that AMI screwed up
+    Finally report USB 3.2+ devices (USB 3.2 = 20 Gbps, USB 4.0 = 40 Gpbs, USB 4.1 = 80 Gbps - See, USB Forum, it's really NOT that hard!)
+    Fix the CA 2023 updated files not being taken into account during runtime UEFI media validation
+    Fix the "Silent" installation option being potentially applied even when all dependencies aren't met
+    Fix a regression where "Write as ESP" used the whole drive, instead of the expected 1 GB partition
+    Fix WUE timezone duplication for non English locales and reinstate the use of dots in local usernames
+    Add classic right click context menu restoration to the QoL improvements option (courtesy of Frédéric Lachapelle)
+    Drop the ever problematic use of Group Policies when disabling the "Do you want to format this drive?" prompt
+    Improve raw image partition (re)mount (courtesy of Jared Hagel)
+    Update embedded GRUB to version 2.16
+    Update libcdio to latest
+    Update the official DBX URLs, since they were changed by Microsoft
+    Address vulnerabilities, courtesy of @indep-arg, Andreas Fehlner, Adam Korczynski, Ramesh Adhikari, Holden Han and Abi Kasparov
+
+o Version 4.15 (2026.06.30)
+    Add RISC-V 64 support to UEFI:NTFS
+    Improve the guards for using the "silent" Windows installation option
+    Improve the ability to cancel during write retries
+    Improve progress reporting for compressed image extraction
+    Fix unrestricted XML entity expansion and integer overflow in ezxml parser (courtesy of Eric Sadowski)
+    Fix "silent" Windows installation failing at 75% in most cases
+    Fix a crash during boot when using UEFI:NTFS on Snapdragon X based ARM64 platforms
+    Fix first WUE option always being checked by default
+    Fix an infinite loop when using Windows ISOs that contain multiple WIMs
+    Fix "Enable runtime UEFI media validation" checkbox not always being properly enabled
+    Other WUE improvements/fixes for OneDrive removal and username validation (with thanks to @christian8641)
+
+o Version 4.14 (2026.04.30)
+    Windows User Experience improvements:
+      - Add a "Quality of Life" option, to disable Teams, Outlook, Copilot and other Microsoft forced nuisances
+      - Add a Silent installation option, that automatically, and WITHOUT PROMPT, installs Windows on the first detected disk
+      - Add an option to copy 'SkuSiPolicy.p7b' to the ESP on installation (please refer to KB5042562 for more info)
+      - Add tooltips for all the dialog options
+    Add limited support for El-Torito UEFI image extraction (Mostly for Dell BIOS update ISOs)
+    Improve error report when the user tries to use an image that resides on the target drive
+    Improve the UEFI:NTFS partition label to make the install media more explicit during Windows Setup disk partitioning
+    Improve support for Bazzite and other Fedora derivatives that don't follow EFI conventions
+    Improve detection and exclusion of the new Bitdefender hidden VHDs
+    Improve reporting of GRUB and Isolinux MBRs
+    Fix potential errors during creation of Windows To Go media, due to the use of new versions of bcdboot
+    Fix errors with local accounts that start or end with whitespaces
+
+o Version 4.13 (2026.02.17) [BUGFIX RELEASE]
+    Fix UEFI:NTFS not selecting the proper driver for ARM/ARM64
+    Update embedded GRUB to v2.14
+
+o Version 4.12 (2026.01.30)
+    Filter out the new Bitdefender VHDs
+    Filter disallowed characters in local account names
+    Improve Microsoft Dev Drive detection (courtesy of Martin Kuschnik)
+    Improve the pre-formatting partition cleanup code
+    Improve error reporting on ISO extraction issues
+    Improve detection of drives with long hardware IDs (typically SSDs)
+    Improve conflicting process reporting
+    Improve support for Nutanix and umbrelOS ISOs
+    Fix a TOCTOU vulnerability in Fido script execution (CVE-2026-2398, reported by @independent-arg)
+    Fix replacement vulnerabilities for diskcopy.dll and oscdimg.exe
+    Fix FFU image creation being erroneously invocated, when trying to save an ISO image
+    Fix saving of ISO images to paths that contain spaces
+    Update UEFI:NTFS and UEFI DBXs to latest
+
+o Version 4.11 (2025.10.02)
+    Add a cheat mode to toggle between Light and Dark mode
+    Improve WUE option text relating to the CA 2023 option
+    Update Linux SBAT / Microsoft SVN Secure Boot revocation values to latest
+    Fix some GRUB/Syslinux download dialogs showing only the 'Close' button
+    Fix an assert being triggered when using the WUE CA 2023 option on its own
+    Fix an application crash on systems that have a failed dynamic disk
+
+o Version 4.10 (2025.09.24)
+    Add Dark Mode support (courtesy of @ozone10)
+    Add support for creating Windows CA 2023 compatible media (requires a Windows 11 25H2 ISO)
+    Add support for saving an existing drive to ISO (UDF only)
+    Improve error reporting when saving to VHD/VHDX (with thanks to @Kazkans)
+    Improve persistence support for Linux Mint
+    Fix UEFI DBX updates being reported in some timezones, even when there are none
+    Fix a situation where no file system can be selected in ISO mode
+    Fix a crash when trying to process Windows ISOs with very long paths
+
+o Version 4.9 (2025.06.15) [BUGFIX RELEASE]
+    Fix downloads from https://rufus.ie no longer working due to recent GitHub server changes
+    Fix unofficial Windows ISOs, with single index WIMs, not presenting the WUE dialog
+
+o Version 4.8 (2025.06.11)
+    Switch to wimlib for all WIM image processing:
+      - Greatly speeds up image analysis when opening Windows ISOs
+      - Can speed up Windows To Go drive creation (But won't do miracles if you have a crap drive)
+      - Might help with Parallels limitations on Mac (But Rufus on Parallels is still UNSUPPORTED)
+      - Enables the splitting of >4GB files with Alt-E (But still WAY SLOWER than using UEFI:NTFS)
+    Switch to using Visual Studio binaries everywhere, due to MinGW DLL delay-loading limitations
+    Add more exceptions for Linux ISOs that restrict themselves to DD mode (Nobara, openSUSE, ...)
+    Improve reporting of UEFI bootloaders in the log, with info on the Secure Boot status
+    Fix an issue with size limitations when writing an uncompressed VHD back to the same drive
+    Fix a crash when opening the log with the 32-bit MinGW compiled version
+    Fix commandline parameters not being forwarded to original Windows setup.exe
+
+o Version 4.7 (2025.04.09)
+    Add a mechanism to detect and download updated DBXs from the official UEFI repository
+    Add zstd compression support for disk images
+    Add a new exclusion feature in the settings, to ignore disks with a specific GPT GUID
+    Improve detection for compressed VHD images that are too large to fit the target drive
+    Fix commandline hogger not being deleted when running Rufus from a different directory
+    Fix FAT filenames from embedded images being potentially truncated on image extraction
+    Fix a side-loading vulnerability [CVE-2025-26624] with cfgmgr32.dll (with thanks to @EmperialX)
+    Fix UI memory leaks (courtesy of @ozone10)
+    Fall back to user/system default locale when getting error description (courtesy of @Wack0)
+    Don't run the commandline hogger on POSIX shells
+    Drop ARM 32-bit builds (Note that ARM 64-bit builds are *NOT* affected by this)
+    Update FreeDOS and Grub4DOS to latest
+
+o Version 4.6 (2024.10.21)
+    Add a new setup.exe wrapper to bypass Windows 11 24H2 in-place upgrade restrictions
+    Add TimeZone to regional options replication
+    Set local account passwords to not expire by default
+    Fix an error when trying to write compressed VHD images
+    Fix an error when invoking Rufus from the PowerShell commandline
+    Improve revoked UEFI bootloaders check to support Linux SBAT, Windows SVN and cert DBX
+    Improve support for ReactOS boot media
+  
+o Version 4.5 (2024.05.22)
+    Add new advanced option to perform runtime UEFI media validation of suitable images (Windows, most Linux)
+    Move the 'Use Rufus MBR' advanced option to a cheat mode (Alt-A)
+    Fix truncation of VHDX images, as well as a benign error message when writing VHD/VHDX
+    Fix support for Linux persistence in some configurations (Mint, Ubuntu 24.04)
+    Fix multiple potential vulnerabilities (with thanks to Mansour Gashasbi)
+    Update internal GRUB to version 2.12
+    Update UEFI:NTFS to latest (now always uses the ntfs-3g driver, rather than the buggy AMI NTFS one)
+    Increase buffer size when copying ISO files, in an attempt to minimize the AMI NTFS UEFI driver bug
+    Improve partition creation handling
+    Don't display the WUE dialog when a conflicting 'unattend.xml' already exists
+
+o Version 4.4 (2024.01.17)
+    Add workaround for distros that use broken symbolic links as their UEFI bootloaders (such as Mint 21.3)
+    Add support for GRUB 2.12
+    Fix a crash when saving .ffu images
+    Fix UEFI:NTFS partition not being added, in MBR mode, for some Linux ISOs
+    Prevent Microsoft Dev Drives from being listed
+    Improve support for SDXC card readers
+    Improve Large FAT32 formatting by aligning start of data regions to 1 MB (courtesy of Fred)
+
 o Version 4.3 (2023.10.19)
     Add support for Rock Ridge symbolic links preservation when NTFS is used
     Add an exception to enforce NTFS for Linux Mint's LMDE

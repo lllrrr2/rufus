@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * Standard User I/O Routines (logging, status, error, etc.)
- * Copyright © 2011-2023 Pete Batard <pete@akeo.ie>
+ * Copyright © 2011-2026 Pete Batard <pete@akeo.ie>
  * Copyright © 2020 Mattiwatti <mattiwatti@gmail.com>
  *
  * This program is free software: you can redistribute it and/or modify
@@ -35,11 +35,14 @@
 #include <math.h>
 
 #include "rufus.h"
+#include "ntdll.h"
+#include "winio.h"
 #include "missing.h"
 #include "settings.h"
 #include "resource.h"
 #include "msapi_utf8.h"
 #include "localization.h"
+#include "bled/bled.h"
 
 #define FACILITY_WIM            322
 #define DEFAULT_BASE_ADDRESS    0x100000000ULL
@@ -52,6 +55,7 @@ const HANDLE hRufus = (HANDLE)0x0000005275667573ULL;	// "\0\0\0Rufus"
 HWND hStatus;
 size_t ubuffer_pos = 0;
 char ubuffer[UBUFFER_SIZE];	// Buffer for ubpushf() messages we don't log right away
+static uint64_t archive_size;
 
 #pragma pack(push, 1)
 typedef struct {
@@ -71,12 +75,13 @@ void uprintf(const char *format, ...)
 	int n;
 
 	va_start(args, format);
-	n = safe_vsnprintf(p, sizeof(buf)-3, format, args); // buf-3 is room for CR/LF/NUL
+	n = safe_vsnprintf(p, sizeof(buf) - 3, format, args); // buf - 3 is room for CR/LF/NUL
 	va_end(args);
 
-	p += (n < 0)?sizeof(buf)-3:n;
+	// safe_vsnprintf() translates to _vsnprintf_s() for all toolchains and returns negative on truncation
+	p += (n < 0) ? sizeof(buf) - 3 : n;
 
-	while((p>buf) && (isspaceU(p[-1])))
+	while((p > buf) && (isspaceU(p[-1])))
 		*--p = '\0';
 
 	*p++ = '\r';
@@ -85,6 +90,7 @@ void uprintf(const char *format, ...)
 
 	wbuf = utf8_to_wchar(buf);
 	// Send output to Windows debug facility
+	// coverity[dont_call]
 	OutputDebugStringW(wbuf);
 	if ((hLog != NULL) && (hLog != INVALID_HANDLE_VALUE)) {
 		// Send output to our log Window
@@ -96,10 +102,39 @@ void uprintf(const char *format, ...)
 	free(wbuf);
 }
 
+void wuprintf(const wchar_t* format, ...)
+{
+	static wchar_t wbuf[4096];
+	wchar_t* p = wbuf;
+	va_list args;
+	int n;
+
+	va_start(args, format);
+	n = _vsnwprintf_s(p, ARRAYSIZE(wbuf) - 3, _TRUNCATE, format, args);
+	va_end(args);
+
+	p += (n < 0) ? ARRAYSIZE(wbuf) - 3 : n;
+
+	if (n >= 1 && p[-1] == L'\n') {
+		p[-1] = L'\r';
+		*p++ = L'\n';
+		*p = L'\0';
+	}
+
+	// coverity[dont_call]
+	OutputDebugStringW(wbuf);
+	if ((hLog != NULL) && (hLog != INVALID_HANDLE_VALUE)) {
+		Edit_SetSel(hLog, MAX_LOG_SIZE, MAX_LOG_SIZE);
+		Edit_ReplaceSel(hLog, wbuf);
+		Edit_Scroll(hLog, Edit_GetLineCount(hLog), 0);
+	}
+}
+
 void uprintfs(const char* str)
 {
 	wchar_t* wstr;
 	wstr = utf8_to_wchar(str);
+	// coverity[dont_call]
 	OutputDebugStringW(wstr);
 	if ((hLog != NULL) && (hLog != INVALID_HANDLE_VALUE)) {
 		Edit_SetSel(hLog, MAX_LOG_SIZE, MAX_LOG_SIZE);
@@ -109,11 +144,28 @@ void uprintfs(const char* str)
 	free(wstr);
 }
 
+void uprint_progress(uint64_t cur_value, uint64_t max_value)
+{
+	static uint64_t last_value = 0;
+	if (cur_value == 0) {
+		last_value = 0;
+		return;
+	}
+	assert(max_value != 0);
+	cur_value = (uint64_t)(((float)cur_value / (float)max_value) * min(MAX_MARKER, (float)max_value));
+	for (; cur_value > last_value && last_value < 80; last_value++)
+		uprintfs("+");
+}
+
 uint32_t read_file(const char* path, uint8_t** buf)
 {
+	if_assert_fails(safe_strlen(path) > 0 && buf != NULL)
+		return 0;
+
+	*buf = NULL;
 	FILE* fd = fopenU(path, "rb");
 	if (fd == NULL) {
-		uprintf("Error: Can't open file '%s'", path);
+		uprintf("Can't open file '%s'", path);
 		return 0;
 	}
 
@@ -121,16 +173,19 @@ uint32_t read_file(const char* path, uint8_t** buf)
 	uint32_t size = (uint32_t)ftell(fd);
 	fseek(fd, 0L, SEEK_SET);
 
-	*buf = malloc(size);
+	// +1 so we can add an extra NUL
+	*buf = malloc(size + 1);
 	if (*buf == NULL) {
-		uprintf("Error: Can't allocate %d bytes buffer for file '%s'", size, path);
+		uprintf("Can't allocate %d bytes buffer for file '%s'", size, path);
 		size = 0;
 		goto out;
 	}
 	if (fread(*buf, 1, size, fd) != size) {
-		uprintf("Error: Can't read '%s'", path);
+		uprintf("Can't read '%s'", path);
 		size = 0;
 	}
+	// Always NUL terminate the file
+	(*buf)[size] = 0;
 
 out:
 	fclose(fd);
@@ -141,19 +196,86 @@ out:
 	return size;
 }
 
+/*
+ * Read and validate a local signed file against its signature.
+ * buf can be NULL in which case only validation is performed (returns nonzero size if valid)
+ * 
+ */
+uint32_t read_signed_file(const char* path, uint8_t** buf)
+{
+	char* sig_path = NULL;
+	uint8_t *sig = NULL, *_buf = NULL;
+	uint32_t size = 0;
+	size_t len;
+
+	if_assert_fails(safe_strlen(path) > 0)
+		return 0;
+
+	// If the file doesn't exist, just return
+	if (_accessU(path, 0) == -1)
+		return 0;
+	len = strlen(path) + 5;
+	sig_path = malloc(len);
+	if (sig_path == NULL) {
+		uprintf("Can't allocate '%s.sig' name", path);
+		return 0;
+	}
+	safe_sprintf(sig_path, len, "%s.sig", path);
+	size = read_file(sig_path, &sig);
+	safe_free(sig_path);
+	if (size != RSA_SIGNATURE_SIZE) {
+		safe_free(sig);
+		uprintf("Signature for local '%s' is missing or corrupted", path);
+		return 0;
+	}
+
+	size = read_file(path, buf ? buf : &_buf);
+	if (!ValidateOpensslSignature(buf ? *buf : _buf, size, sig, RSA_SIGNATURE_SIZE)) {
+		safe_free(sig);
+		if (buf)
+			safe_free(*buf);
+		else
+			free(_buf);
+		uprintf("Signature for local '%s' is invalid ✗", path);
+		return 0;
+	}
+
+	safe_free(_buf);
+	safe_free(sig);
+	uprintf("Signature for local '%s' is valid ✓", path);
+	return size;
+}
+
 uint32_t write_file(const char* path, const uint8_t* buf, const uint32_t size)
 {
 	uint32_t written;
+
+	if_assert_fails(safe_strlen(path) > 0 && buf != NULL)
+		return 0;
+
 	FILE* fd = fopenU(path, "wb");
 	if (fd == NULL) {
-		uprintf("Error: Can't create '%s'", path);
+		uprintf("Can't create '%s'", path);
 		return 0;
 	}
 	written = (uint32_t)fwrite(buf, 1, size, fd);
 	if (written != size)
-		uprintf("Error: Can't write '%s'", path);
+		uprintf("Can't write '%s'", path);
 	fclose(fd);
 	return written;
+}
+
+BOOL copy_signed_file(const char* src, const char* dst)
+{
+	BOOL ret = FALSE;
+	uint8_t* buf = NULL;
+	uint32_t len;
+	len = read_signed_file(src, &buf);
+	if (len == 0)
+		return FALSE;
+	ret = (write_file(dst, buf, len) == len);
+	free(buf);
+	return ret;
 }
 
 // Prints a bitstring of a number of any size, with or without leading zeroes.
@@ -196,7 +318,7 @@ void DumpBufferHex(void *buf, size_t size)
 			uprintf("%s\n", line);
 		line[0] = 0;
 		sprintf(&line[strlen(line)], "  %08x  ", (unsigned int)i);
-		for(j=0,k=0; k<16; j++,k++) {
+		for(j = 0,k = 0; k < 16; j++,k++) {
 			if (i+j < size) {
 				sprintf(&line[strlen(line)], "%02x", buffer[i+j]);
 			} else {
@@ -205,7 +327,7 @@ void DumpBufferHex(void *buf, size_t size)
 			sprintf(&line[strlen(line)], " ");
 		}
 		sprintf(&line[strlen(line)], " ");
-		for(j=0,k=0; k<16; j++,k++) {
+		for(j = 0,k = 0; k < 16; j++,k++) {
 			if (i+j < size) {
 				if ((buffer[i+j] < 32) || (buffer[i+j] > 126)) {
 					sprintf(&line[strlen(line)], ".");
@@ -226,16 +348,30 @@ const char *WindowsErrorString(void)
 	static char err_string[256] = { 0 };
 
 	DWORD size, presize;
-	DWORD error_code, format_error;
+	DWORD error_code, _error_code, format_error;
+	LCID locale;
 	HANDLE hModule = NULL;
 
 	error_code = GetLastError();
+	_error_code = error_code;
+	// Set thread locale to en-US when in this function.
+	// This is because kernel32!FormatMessage is documented to try the following order when dwLanguageId==0:
+	// - Language neutral
+	// - Thread locale
+	// - User default locale
+	// - System default locale
+	// - English US
+	// Some Windows localisations do not provide English MUI resources for specific error codes.
+	// So with thread locale set to en-US, FormatMessage will try neutral, then en-US, then fall back to localised string.
+	locale = GetThreadLocale();
+	SetThreadLocale(MAKELCID(MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US), SORT_DEFAULT));
+retry:
 	// Check for specific facility error codes
-	switch (HRESULT_FACILITY(error_code)) {
+	switch (HRESULT_FACILITY(_error_code)) {
 	case FACILITY_NULL:
 		// Special case for internet related errors, that don't actually have a facility
 		// set but still require a hModule into wininet to display the messages.
-		if ((error_code >= INTERNET_ERROR_BASE) && (error_code <= INTERNET_ERROR_LAST))
+		if ((_error_code >= INTERNET_ERROR_BASE) && (_error_code <= INTERNET_ERROR_LAST))
 			hModule = GetModuleHandleA("wininet.dll");
 		break;
 	case FACILITY_ITF:
@@ -253,15 +389,28 @@ const char *WindowsErrorString(void)
 	// coverity[var_deref_model]
 	size = FormatMessageU(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS |
 		((hModule != NULL) ? FORMAT_MESSAGE_FROM_HMODULE : 0), hModule,
-		HRESULT_CODE(error_code), MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US),
-		&err_string[presize], (DWORD)(sizeof(err_string)-strlen(err_string)), NULL);
+		_error_code, 0,
+		&err_string[presize], (DWORD)(sizeof(err_string) - strlen(err_string)), NULL);
 	if (size == 0) {
 		format_error = GetLastError();
-		if ((format_error) && (format_error != ERROR_MR_MID_NOT_FOUND) && (format_error != ERROR_MUI_FILE_NOT_LOADED))
-			static_sprintf(err_string, "[0x%08lX] (FormatMessage error code 0x%08lX)",
-				error_code, format_error);
-		else
-			static_sprintf(err_string, "[0x%08lX] (No Windows Error String)", error_code);
+		switch (format_error) {
+		case ERROR_SUCCESS:
+			static_sprintf(err_string, "[0x%08lX] (No Windows Error String)", _error_code);
+			break;
+		case ERROR_MR_MID_NOT_FOUND:
+		case ERROR_MUI_FILE_NOT_FOUND:
+		case ERROR_MUI_FILE_NOT_LOADED:
+			// We might be trying with the wrong facility. Remove it and try again.
+			if (HRESULT_FACILITY(_error_code) != FACILITY_NULL) {
+				_error_code = HRESULT_CODE(_error_code);
+				goto retry;
+			}
+			static_sprintf(err_string, "[0x%08lX] (NB: This system was unable to provide a descriptive error message)", error_code);
+			break;
+		default:
+			static_sprintf(err_string, "[0x%08lX] (FormatMessage error code 0x%08lX)", error_code, format_error);
+			break;
+		}
 	} else {
 		// Microsoft may suffix CRLF to error messages, which we need to remove...
 		assert(presize > 2);
@@ -271,6 +420,7 @@ const char *WindowsErrorString(void)
 			err_string[size--] = 0;
 	}
 
+	SetThreadLocale(locale);	// Set the original thread locale on exit
 	SetLastError(error_code);	// Make sure we don't change the errorcode on exit
 	return err_string;
 }
@@ -288,18 +438,25 @@ char* GuidToString(const GUID* guid, BOOL bDecorated)
 	return guid_string;
 }
 
-GUID* StringToGuid(const char* str)
+GUID StringToGuid(const char* str)
 {
-	static GUID guid;
-
-	if (str == NULL) return NULL;
-	if (sscanf(str, "{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}",
-		(uint32_t*)&guid.Data1, (uint32_t*)&guid.Data2, (uint32_t*)&guid.Data3,
-		(uint32_t*)&guid.Data4[0], (uint32_t*)&guid.Data4[1], (uint32_t*)&guid.Data4[2],
-		(uint32_t*)&guid.Data4[3], (uint32_t*)&guid.Data4[4], (uint32_t*)&guid.Data4[5],
-		(uint32_t*)&guid.Data4[6], (uint32_t*)&guid.Data4[7]) != 11)
-		return NULL;
-	return &guid;
+	GUID guid = { 0 };
+	uint32_t d1, d2, d3, b0, b1, b2, b3, b4, b5, b6, b7;
+	if (str != NULL && sscanf(str[0] == '{' ? &str[1] : str, "%8x-%4x-%4x-%2x%2x-%2x%2x%2x%2x%2x%2x",
+		&d1, &d2, &d3, &b0, &b1, &b2, &b3, &b4, &b5, &b6, &b7) == 11) {
+		guid.Data1 = d1;
+		guid.Data2 = (uint16_t)d2;
+		guid.Data3 = (uint16_t)d3;
+		guid.Data4[0] = (uint8_t)b0;
+		guid.Data4[1] = (uint8_t)b1;
+		guid.Data4[2] = (uint8_t)b2;
+		guid.Data4[3] = (uint8_t)b3;
+		guid.Data4[4] = (uint8_t)b4;
+		guid.Data4[5] = (uint8_t)b5;
+		guid.Data4[6] = (uint8_t)b6;
+		guid.Data4[7] = (uint8_t)b7;
+	}
+	return guid;
 }
 
 // Find upper power of 2
@@ -323,28 +480,28 @@ char* SizeToHumanReadable(uint64_t size, BOOL copy_to_log, BOOL fake_units)
 	double hr_size = (double)size;
 	double t;
 	uint16_t i_size;
-	char **_msg_table = copy_to_log?default_msg_table:msg_table;
-	const double divider = fake_units?1000.0:1024.0;
+	char **_msg_table = copy_to_log ? default_msg_table : msg_table;
+	const double divider = fake_units ? 1000.0 : 1024.0;
 
-	for (suffix=0; suffix<MAX_SIZE_SUFFIXES-1; suffix++) {
+	for (suffix = 0; suffix < MAX_SIZE_SUFFIXES - 1; suffix++) {
 		if (hr_size < divider)
 			break;
 		hr_size /= divider;
 	}
 	if (suffix == 0) {
-		static_sprintf(str_size, "%s%d%s %s", dir, (int)hr_size, dir, _msg_table[MSG_020-MSG_000]);
+		static_sprintf(str_size, "%s%d%s %s", dir, (int)hr_size, dir, _msg_table[MSG_020 - MSG_000]);
 	} else if (fake_units) {
 		if (hr_size < 8) {
-			static_sprintf(str_size, (fabs((hr_size*10.0)-(floor(hr_size + 0.5)*10.0)) < 0.5)?"%0.0f%s":"%0.1f%s",
-				hr_size, _msg_table[MSG_020+suffix-MSG_000]);
+			static_sprintf(str_size, (fabs((hr_size * 10.0) - (floor(hr_size + 0.5) * 10.0)) < 0.5) ?
+				"%0.0f%s":"%0.1f%s", hr_size, _msg_table[MSG_020 + suffix - MSG_000]);
 		} else {
 			t = (double)upo2((uint16_t)hr_size);
-			i_size = (uint16_t)((fabs(1.0f-(hr_size / t)) < 0.05f)?t:hr_size);
-			static_sprintf(str_size, "%s%d%s %s", dir, i_size, dir, _msg_table[MSG_020+suffix-MSG_000]);
+			i_size = (uint16_t)((fabs(1.0f - (hr_size / t)) < 0.05f) ? t : hr_size);
+			static_sprintf(str_size, "%s%d%s %s", dir, i_size, dir, _msg_table[MSG_020 + suffix - MSG_000]);
 		}
 	} else {
 		static_sprintf(str_size, (hr_size * 10.0 - (floor(hr_size) * 10.0)) < 0.5?
-			"%s%0.0f%s %s":"%s%0.1f%s %s", dir, hr_size, dir, _msg_table[MSG_020+suffix-MSG_000]);
+			"%s%0.0f%s %s":"%s%0.1f%s %s", dir, hr_size, dir, _msg_table[MSG_020 + suffix - MSG_000]);
 	}
 	return str_size;
 }
@@ -503,7 +660,17 @@ HANDLE CreateFileWithTimeout(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwS
 	if (hThread != NULL) {
 		if (WaitForSingleObject(hThread, dwTimeOut) == WAIT_TIMEOUT) {
 			CancelSynchronousIo(hThread);
-			WaitForSingleObject(hThread, INFINITE);
+			switch (WaitForSingleObject(hThread, 30000)) {
+			case WAIT_TIMEOUT:
+				uprintf("Could not open file or device within timeout duration");
+				break;
+			case WAIT_OBJECT_0:
+				uprintf("Operation aborted by user");
+				break;
+			default:
+				uprintf("Error while waiting for file or device to be opened: %s", WindowsErrorString());
+				break;
+			}
 			params.dwError = WAIT_TIMEOUT;
 		}
 		CloseHandle(hThread);
@@ -520,52 +687,45 @@ HANDLE CreateFileWithTimeout(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwS
 BOOL WriteFileWithRetry(HANDLE hFile, LPCVOID lpBuffer, DWORD nNumberOfBytesToWrite,
 	LPDWORD lpNumberOfBytesWritten, DWORD nNumRetries)
 {
-	DWORD nTry;
-	BOOL readFilePointer;
-	LARGE_INTEGER liFilePointer, liZero = { { 0,0 } };
-	DWORD NumberOfBytesWritten;
+	static const LARGE_INTEGER liZero = { { 0,0 } };
+	DWORD nTry, NumberOfBytesWritten;
+	NOW_THATS_WHAT_I_CALL_AN_OVERLAPPED overlapped = { 0 };
 
 	if (lpNumberOfBytesWritten == NULL)
 		lpNumberOfBytesWritten = &NumberOfBytesWritten;
 
-	// Need to get the current file pointer in case we need to retry
-	readFilePointer = SetFilePointerEx(hFile, liZero, &liFilePointer, FILE_CURRENT);
-	if (!readFilePointer)
-		uprintf("Warning: Could not read file pointer %s", WindowsErrorString());
+	// Need to get the current file pointer for retry
+	if (!SetFilePointerEx(hFile, liZero, (PLARGE_INTEGER)&overlapped.Offset, FILE_CURRENT)) {
+		uprintf("ERROR: Could not set file offset %s", WindowsErrorString());
+		return FALSE;
+	}
 
 	if (nNumRetries == 0)
 		nNumRetries = 1;
-	for (nTry = 1; nTry <= nNumRetries; nTry++) {
-		// Need to rewind our file position on retry - if we can't even do that, just give up
-		if ((nTry > 1) && (!SetFilePointerEx(hFile, liFilePointer, NULL, FILE_BEGIN))) {
-			uprintf("Could not set file pointer - Aborting");
-			break;
-		}
-		if (WriteFile(hFile, lpBuffer, nNumberOfBytesToWrite, lpNumberOfBytesWritten, NULL)) {
+	for (nTry = 1; nTry <= nNumRetries && (HRESULT_CODE(ErrorStatus) != ERROR_CANCELLED); nTry++) {
+		if (WriteFile(hFile, lpBuffer, nNumberOfBytesToWrite, lpNumberOfBytesWritten, (LPOVERLAPPED)&overlapped)) {
 			LastWriteError = 0;
 			if (nNumberOfBytesToWrite == *lpNumberOfBytesWritten)
 				return TRUE;
 			// Some large drives return 0, even though all the data was written - See github #787 */
 			if (large_drive && (*lpNumberOfBytesWritten == 0)) {
-				uprintf("Warning: Possible short write");
+				uprintf("WARNING: Possible short write");
 				return TRUE;
 			}
 			uprintf("Wrote %d bytes but requested %d", *lpNumberOfBytesWritten, nNumberOfBytesToWrite);
 		} else {
 			uprintf("Write error %s", WindowsErrorString());
-			LastWriteError = ERROR_SEVERITY_ERROR|FAC(FACILITY_STORAGE)|GetLastError();
+			LastWriteError = RUFUS_ERROR(GetLastError());
+			if (LastWriteError == RUFUS_ERROR(ERROR_DISK_FULL) || HRESULT_CODE(ErrorStatus) == ERROR_CANCELLED)
+				break;
 		}
-		// If we can't reposition for the next run, just abort
-		if (!readFilePointer)
-			break;
 		if (nTry < nNumRetries) {
 			uprintf("Retrying in %d seconds...", WRITE_TIMEOUT / 1000);
-			// TODO: Call GetProcessSearch() here?
 			Sleep(WRITE_TIMEOUT);
 		}
 	}
-	if (SCODE_CODE(GetLastError()) == ERROR_SUCCESS)
-		SetLastError(ERROR_SEVERITY_ERROR|FAC(FACILITY_STORAGE)|ERROR_WRITE_FAULT);
+	if (SCODE_CODE(GetLastError()) == ERROR_SUCCESS && HRESULT_CODE(ErrorStatus) != ERROR_CANCELLED)
+		SetLastError(RUFUS_ERROR(ERROR_WRITE_FAULT));
 	return FALSE;
 }
 
@@ -605,136 +765,57 @@ DWORD WaitForSingleObjectWithMessages(HANDLE hHandle, DWORD dwMilliseconds)
 	return res;
 }
 
-#define STATUS_SUCCESS					((NTSTATUS)0x00000000L)
-#define STATUS_PROCEDURE_NOT_FOUND		((NTSTATUS)0xC000007AL)
-#define FILE_ATTRIBUTE_VALID_FLAGS		0x00007FB7
-#define NtCurrentPeb()					(NtCurrentTeb()->ProcessEnvironmentBlock)
-#define RtlGetProcessHeap()				(NtCurrentPeb()->Reserved4[1]) // NtCurrentPeb()->ProcessHeap, mangled due to deficiencies in winternl.h
+#ifdef VALIDATE_SAME_VOLUME
+extern char target_volume[64];
+// Validates that a file handle resides on the same volume as our target volume
+static BOOL ValidateVolumeGUID(HANDLE h)
+{
+	char path[MAX_PATH + 64];
+	DWORD size = GetFinalPathNameByHandleA(h, path, sizeof(path), FILE_NAME_NORMALIZED | VOLUME_NAME_GUID);
+	if (size < 49 || size >= sizeof(path))
+		return FALSE;
 
-PF_TYPE_DECL(NTAPI, NTSTATUS, NtCreateFile, (PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, PLARGE_INTEGER, ULONG, ULONG, ULONG, ULONG, PVOID, ULONG));
-PF_TYPE_DECL(NTAPI, BOOLEAN, RtlDosPathNameToNtPathNameW, (PCWSTR, PUNICODE_STRING, PWSTR*, PVOID));
-PF_TYPE_DECL(NTAPI, BOOLEAN, RtlFreeHeap, (PVOID, ULONG, PVOID));
-PF_TYPE_DECL(NTAPI, VOID, RtlSetLastWin32ErrorAndNtStatusFromNtStatus, (NTSTATUS));
+	return (_strnicmp(path, target_volume, 49) == 0);
+}
+#endif
 
+// This creates a *contiguous* preallocated file on file systems such as NTFS.
+// The contiguousness is something we want due to the *OBNOXIOUS* AMI NTFS driver
+// but that makes their UEFI NTFS driver read data from the wrong clusters when
+// an NTFS file that has multiple Runs (contiguous cluster sections) happens to
+// be issued a read that matches the size of a Run exactly. Because of this, our
+// UEFI media validation reports files that are corrupted (because the Ami driver
+// fed us garbage data) whereas the data on the NTFS file system is absolutely
+// fine. Therefore, to work around this bug and make sure our NTFS files have
+// only one Run (i.e. have contiguous data), we add a call to SetEndOfFile().
+// See https://github.com/pbatard/AmiNtfsBug for more details.
+// This *should* also pre-allocate the file on disk...
 HANDLE CreatePreallocatedFile(const char* lpFileName, DWORD dwDesiredAccess,
 	DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition,
-	DWORD dwFlagsAndAttributes, LONGLONG fileSize)
+	DWORD dwFlagsAndAttributes, LONGLONG llFileSize)
 {
-	HANDLE fileHandle = INVALID_HANDLE_VALUE;
-	OBJECT_ATTRIBUTES objectAttributes;
-	IO_STATUS_BLOCK ioStatusBlock;
-	UNICODE_STRING ntPath;
-	ULONG fileAttributes, flags = 0;
-	LARGE_INTEGER allocationSize;
-	NTSTATUS status = STATUS_SUCCESS;
+	HANDLE h = CreateFileU(lpFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes,
+		dwCreationDisposition, dwFlagsAndAttributes, NULL);
+	if (h == INVALID_HANDLE_VALUE)
+		return h;
 
-	PF_INIT_OR_SET_STATUS(NtCreateFile, Ntdll);
-	PF_INIT_OR_SET_STATUS(RtlDosPathNameToNtPathNameW, Ntdll);
-	PF_INIT_OR_SET_STATUS(RtlFreeHeap, Ntdll);
-	PF_INIT_OR_SET_STATUS(RtlSetLastWin32ErrorAndNtStatusFromNtStatus, Ntdll);
-
-	if (!NT_SUCCESS(status)) {
-		return CreateFileU(lpFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes,
-			dwCreationDisposition, dwFlagsAndAttributes, NULL);
-	}
-
-	wconvert(lpFileName);
-
-	// Determine creation disposition and flags
-	switch (dwCreationDisposition) {
-	case CREATE_NEW:
-		dwCreationDisposition = FILE_CREATE;
-		break;
-	case CREATE_ALWAYS:
-		dwCreationDisposition = FILE_OVERWRITE_IF;
-		break;
-	case OPEN_EXISTING:
-		dwCreationDisposition = FILE_OPEN;
-		break;
-	case OPEN_ALWAYS:
-		dwCreationDisposition = FILE_OPEN_IF;
-		break;
-	case TRUNCATE_EXISTING:
-		dwCreationDisposition = FILE_OVERWRITE;
-		break;
-	default:
-		SetLastError(ERROR_INVALID_PARAMETER);
+#ifdef VALIDATE_SAME_VOLUME
+	// Double check that the files we create are on our expected target volume
+	if_assert_fails(ValidateVolumeGUID(h)) {
+		CloseHandle(h);
 		return INVALID_HANDLE_VALUE;
 	}
+#endif
 
-	if ((dwFlagsAndAttributes & FILE_FLAG_OVERLAPPED) == 0)
-		flags |= FILE_SYNCHRONOUS_IO_NONALERT;
-
-	if ((dwFlagsAndAttributes & FILE_FLAG_WRITE_THROUGH) != 0)
-		flags |= FILE_WRITE_THROUGH;
-
-	if ((dwFlagsAndAttributes & FILE_FLAG_NO_BUFFERING) != 0)
-		flags |= FILE_NO_INTERMEDIATE_BUFFERING;
-
-	if ((dwFlagsAndAttributes & FILE_FLAG_RANDOM_ACCESS) != 0)
-		flags |= FILE_RANDOM_ACCESS;
-
-	if ((dwFlagsAndAttributes & FILE_FLAG_SEQUENTIAL_SCAN) != 0)
-		flags |= FILE_SEQUENTIAL_ONLY;
-
-	if ((dwFlagsAndAttributes & FILE_FLAG_DELETE_ON_CLOSE) != 0) {
-		flags |= FILE_DELETE_ON_CLOSE;
-		dwDesiredAccess |= DELETE;
-	}
-
-	if ((dwFlagsAndAttributes & FILE_FLAG_BACKUP_SEMANTICS) != 0) {
-		if ((dwDesiredAccess & GENERIC_ALL) != 0)
-			flags |= (FILE_OPEN_FOR_BACKUP_INTENT | FILE_OPEN_REMOTE_INSTANCE);
-		else {
-			if ((dwDesiredAccess & GENERIC_READ) != 0)
-				flags |= FILE_OPEN_FOR_BACKUP_INTENT;
-
-			if ((dwDesiredAccess & GENERIC_WRITE) != 0)
-				flags |= FILE_OPEN_REMOTE_INSTANCE;
-		}
-	} else {
-		flags |= FILE_NON_DIRECTORY_FILE;
-	}
-
-	if ((dwFlagsAndAttributes & FILE_FLAG_OPEN_REPARSE_POINT) != 0)
-		flags |= FILE_OPEN_REPARSE_POINT;
-
-	if ((dwFlagsAndAttributes & FILE_FLAG_OPEN_NO_RECALL) != 0)
-		flags |= FILE_OPEN_NO_RECALL;
-
-	fileAttributes = dwFlagsAndAttributes & (FILE_ATTRIBUTE_VALID_FLAGS & ~FILE_ATTRIBUTE_DIRECTORY);
-
-	dwDesiredAccess |= (SYNCHRONIZE | FILE_READ_ATTRIBUTES);
-
-	// Convert DOS path to NT format
-	if (!pfRtlDosPathNameToNtPathNameW(wlpFileName, &ntPath, NULL, NULL)) {
-		wfree(lpFileName);
-		SetLastError(ERROR_FILE_NOT_FOUND);
+	// No big deal if either of the following 2 calls fail...
+	if (SetFilePointerEx(h, (LARGE_INTEGER) { .QuadPart = llFileSize }, NULL, FILE_BEGIN))
+		SetEndOfFile(h);
+	// ...however, if we can't reset the file pointer to the beginning, we have a problem
+	if (!SetFilePointerEx(h, (LARGE_INTEGER) { .QuadPart = 0ULL }, NULL, FILE_BEGIN)) {
+		CloseHandle(h);
 		return INVALID_HANDLE_VALUE;
 	}
-
-	InitializeObjectAttributes(&objectAttributes, &ntPath, 0, NULL, NULL);
-
-	if (lpSecurityAttributes != NULL) {
-		if (lpSecurityAttributes->bInheritHandle)
-			objectAttributes.Attributes |= OBJ_INHERIT;
-		objectAttributes.SecurityDescriptor = lpSecurityAttributes->lpSecurityDescriptor;
-	}
-
-	if ((dwFlagsAndAttributes & FILE_FLAG_POSIX_SEMANTICS) == 0)
-		objectAttributes.Attributes |= OBJ_CASE_INSENSITIVE;
-
-	allocationSize.QuadPart = fileSize;
-
-	// Call NtCreateFile
-	status = pfNtCreateFile(&fileHandle, dwDesiredAccess, &objectAttributes, &ioStatusBlock,
-		&allocationSize, fileAttributes, dwShareMode, dwCreationDisposition, flags, NULL, 0);
-
-	pfRtlFreeHeap(RtlGetProcessHeap(), 0, ntPath.Buffer);
-	wfree(lpFileName);
-	pfRtlSetLastWin32ErrorAndNtStatusFromNtStatus(status);
-
-	return fileHandle;
+	return h;
 }
 
 // The following calls are used to resolve the addresses of DLL function calls
@@ -825,11 +906,10 @@ uint32_t ResolveDllAddress(dll_resolver_t* resolver)
 	}
 
 	// Download the PDB from Microsoft's symbol servers
-	if (MessageBoxExU(hMainDialog, lmprintf(MSG_345), lmprintf(MSG_115),
-		MB_YESNO | MB_ICONWARNING | MB_IS_RTL, selected_langid) != IDYES)
+	if (Notification(MB_YESNO | MB_ICONWARNING, lmprintf(MSG_115), lmprintf(MSG_345)) != IDYES)
 		goto out;
 	static_sprintf(path, "%s\\%s", temp_dir, info->PdbName);
-	static_sprintf(url, "http://msdl.microsoft.com/download/symbols/%s/%s%x/%s",
+	static_sprintf(url, "https://msdl.microsoft.com/download/symbols/%s/%s%x/%s",
 		info->PdbName, GuidToString(&info->Guid, FALSE), (int)info->Age, info->PdbName);
 	if (DownloadToFileOrBufferEx(url, path, SYMBOL_SERVER_USER_AGENT, NULL, hMainDialog, FALSE) < 200 * KB)
 		goto out;
@@ -841,7 +921,8 @@ uint32_t ResolveDllAddress(dll_resolver_t* resolver)
 
 	// NB: SymLoadModuleEx() does not load a PDB unless the file has an explicit '.pdb' extension
 	base_address = pfSymLoadModuleEx(hRufus, NULL, path, NULL, DEFAULT_BASE_ADDRESS, 0, NULL, 0);
-	assert(base_address == DEFAULT_BASE_ADDRESS);
+	if_assert_fails(base_address == DEFAULT_BASE_ADDRESS)
+		goto out;
 	// On Windows 11 ARM64 the following call will return *TWO* different addresses for the same
 	// call, because most Windows DLL's are ARM64X, which means that they are an unholy union of
 	// both X64 and ARM64 code in the same binary...
@@ -870,4 +951,99 @@ out:
 		pfSymUnloadModule64(hRufus, base_address);
 	pfSymCleanup(hRufus);
 	return r;
+}
+
+static void print_extracted_file(const char* file_path, uint64_t file_length)
+{
+	char str[MAX_PATH];
+
+	if (file_path == NULL)
+		return;
+	static_sprintf(str, "%s (%s)", file_path, SizeToHumanReadable(file_length, TRUE, FALSE));
+	uprintf("Extracting: %s", str);
+	PrintStatus(0, MSG_000, str);	// MSG_000 is "%s"
+}
+
+static void update_progress(const int64_t processed_bytes)
+{
+	static uint64_t total_bytes = 0;
+
+	if (processed_bytes < 0) {
+		total_bytes = -processed_bytes;
+		UpdateProgressWithInfo(OP_EXTRACT_ZIP, MSG_348, 0, total_bytes);
+	} else
+		UpdateProgressWithInfo(OP_EXTRACT_ZIP, MSG_348, processed_bytes, total_bytes);
+}
+
+// Extract content from a zip archive onto the designated directory or drive
+BOOL ExtractZip(const char* src_zip, const char* dest_dir)
+{
+	int64_t extracted_bytes = 0;
+
+	if (src_zip == NULL)
+		return FALSE;
+	archive_size = _filesizeU(src_zip);
+	if (bled_init(256 * KB, NULL, NULL, NULL, update_progress, print_extracted_file, &ErrorStatus) != 0)
+		return FALSE;
+	uprintf("● Copying files from '%s'", src_zip);
+	extracted_bytes = bled_uncompress_to_dir(src_zip, dest_dir, BLED_COMPRESSION_ZIP);
+	bled_exit();
+	return (extracted_bytes > 0);
+}
+
+// Returns a list of all the files or folders from a directory
+DWORD ListDirectoryContent(StrArray* arr, char* dir, uint8_t type)
+{
+	WIN32_FIND_DATAA FindFileData = { 0 };
+	HANDLE hFind;
+	DWORD dwError, dwResult;
+	char mask[MAX_PATH + 1], path[MAX_PATH + 1];
+
+	if (arr == NULL || dir == NULL || (type & 0x03) == 0)
+		return ERROR_INVALID_PARAMETER;
+
+	if (PathCombineU(mask, dir, "*") == NULL)
+		return GetLastError();
+
+	hFind = FindFirstFileU(mask, &FindFileData);
+	if (hFind == INVALID_HANDLE_VALUE)
+		return GetLastError();
+
+	dwResult = ERROR_FILE_NOT_FOUND;
+	do {
+		if (FindFileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+			if (strcmp(FindFileData.cFileName, ".") == 0 ||
+				strcmp(FindFileData.cFileName, "..") == 0 ||
+				(type & LIST_DIR_TYPE_RECURSIVE) == 0)
+				continue;
+			if (PathCombineU(path, dir, FindFileData.cFileName) == NULL)
+				break;
+			// Append a trailing backslash to directories
+			if (path[strlen(path) - 1] != '\\') {
+				path[strlen(path) + 1] = '\0';
+				path[strlen(path)] = '\\';
+			}
+			if (type & LIST_DIR_TYPE_DIRECTORY)
+				StrArrayAdd(arr, path, TRUE);
+			dwError = ListDirectoryContent(arr, path, type);
+			if (dwError != NO_ERROR && dwError != ERROR_FILE_NOT_FOUND) {
+				SetLastError(dwError);
+				break;
+			}
+		} else {
+			if (type & LIST_DIR_TYPE_FILE) {
+				if (PathCombineU(path, dir, FindFileData.cFileName) == NULL)
+					break;
+				StrArrayAdd(arr, path, TRUE);
+			}
+			dwResult = NO_ERROR;
+		}
+	} while (FindNextFileU(hFind, &FindFileData));
+
+	dwError = GetLastError();
+	FindClose(hFind);
+
+	if (dwError != ERROR_NO_MORE_FILES)
+		return dwError;
+	return dwResult;
 }

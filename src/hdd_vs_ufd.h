@@ -88,13 +88,15 @@ static str_score_t str_score[] = {
 };
 
 static str_score_t str_adjust[] = {
+	{ "SSK Port able", -20 },
 	{ "Gadget", -10 },
 	{ "Flash", -10 },
 	{ "SD-CARD", -10 },
+	{ "uSD Card", -10 },
 	{ "HDD", +20 },
 	{ "SATA", +20 },
 	{ "SCSI", +20 },
-	{ "SSD", +20 }
+	{ "SSD", +20 },
 };
 
 /* The lists belows set a score according to VID & VID:PID
@@ -208,6 +210,7 @@ static vidpid_score_t vidpid_score[] = {
 	{ 0x0c0b, 0xb159, 10 },		// Dura Micro 509
 	// Meh
 	{ 0x0e21, 0x0510, 5 },		// Cowon iAudio X5
+	{ 0x1058, 0x0702, 5 },		// WD 1200BEVExternal HDD
 	{ 0x11b0, 0x6298, 10 },		// Enclosure from Kingston SSDNow notebook upgrade kit
 	// NOT in VID list as plenty of UFDs
 	{ 0x125f, 0xa93a, 10 },		// A-DATA SH93
@@ -249,6 +252,7 @@ static vidpid_score_t vidpid_score[] = {
 	{ 0x04e8, 0x0101, -20 },	// Connect3D Flash Drive
 	{ 0x04e8, 0x1a23, -20 },	// 2 GB UFD
 	{ 0x04e8, 0x5120, -20 },	// 4 GB UFD
+	{ 0x04e8, 0x6300, -20 },	// 256 GB UFD (MUF-256DA/APC)
 	{ 0x04e8, 0x6818, -20 },	// 8 GB UFD
 	{ 0x04e8, 0x6845, -20 },	// 16 GB UFD
 	{ 0x04e8, 0x685E, -20 },	// 16 GB UFD

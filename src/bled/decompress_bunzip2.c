@@ -163,7 +163,7 @@ static int get_next_block(bunzip_data *bd)
 	uint32_t *dbuf;
 	unsigned origPtr, t;
 	unsigned dbufCount, runPos;
-	unsigned runCnt = 0; // runCnt; /* for compiler */
+	unsigned runCnt = 0; /* for compiler */
 
 	dbuf = bd->dbuf;
 	selectors = bd->selectors;
@@ -768,7 +768,7 @@ unpack_bz2_stream(transformer_state_t *xstate)
 	if (check_signature16(xstate, BZIP2_MAGIC))
 		return -1;
 
-	outbuf = xmalloc(IOBUF_SIZE);
+	outbuf = aligned_xmalloc(IOBUF_SIZE);
 	if (outbuf == NULL)
 		return -1;
 	len = 0;
@@ -834,7 +834,7 @@ unpack_bz2_stream(transformer_state_t *xstate)
 
  release_mem:
 	dealloc_bunzip(bd);
-	free(outbuf);
+	aligned_free(outbuf);
 
 	return i ? i : IF_DESKTOP(total_written) + 0;
 }
@@ -843,7 +843,7 @@ char* FAST_FUNC
 unpack_bz2_data(const char *packed, int packed_len, int unpacked_len)
 {
 	char *outbuf = NULL;
-	bunzip_data *bd;
+	bunzip_data *bd = NULL;
 	int i;
 	jmp_buf jmpbuf;
 

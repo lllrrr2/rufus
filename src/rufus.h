@@ -1,6 +1,6 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
- * Copyright © 2011-2023 Pete Batard <pete@akeo.ie>
+ * Copyright © 2011-2026 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,6 +15,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+#include <assert.h>
 #include <windows.h>
 #include <malloc.h>
 #include <inttypes.h>
@@ -25,9 +26,18 @@
 #pragma warning(disable: 6258)		// I know what I'm using TerminateThread for
 #pragma warning(disable: 26451)		// Stop bugging me with casts already!
 #pragma warning(disable: 28159)		// I'll keep using GetVersionEx(), thank you very much...
+// Enable C11's _Static_assert (requires VS2015 or later)
+#define _Static_assert static_assert
 #endif
 
 #pragma once
+
+/* Convenient to have around */
+#define KB                          1024LL
+#define MB                          1048576LL
+#define GB                          1073741824LL
+#define TB                          1099511627776LL
+#define PB                          1125899906842624LL
 
 /*
  * Features not ready for prime time and that may *DESTROY* your data - USE AT YOUR OWN RISKS!
@@ -48,21 +58,20 @@
 #endif
 #define COMPANY_NAME                "Akeo Consulting"
 #define STR_NO_LABEL                "NO_LABEL"
-// Yes, there exist characters between these seemingly empty quotes!
-#define LEFT_TO_RIGHT_MARK          "‎"
-#define RIGHT_TO_LEFT_MARK          "‏"
-#define LEFT_TO_RIGHT_EMBEDDING     "‪"
-#define RIGHT_TO_LEFT_EMBEDDING     "‫"
-#define POP_DIRECTIONAL_FORMATTING  "‬"
-#define LEFT_TO_RIGHT_OVERRIDE      "‭"
-#define RIGHT_TO_LEFT_OVERRIDE      "‮"
+#define LEFT_TO_RIGHT_MARK          "\u200e"
+#define RIGHT_TO_LEFT_MARK          "\u200f"
+#define LEFT_TO_RIGHT_EMBEDDING     "\u202a"
+#define RIGHT_TO_LEFT_EMBEDDING     "\u202b"
+#define POP_DIRECTIONAL_FORMATTING  "\u202c"
+#define LEFT_TO_RIGHT_OVERRIDE      "\u202d"
+#define RIGHT_TO_LEFT_OVERRIDE      "\u202e"
 #define DRIVE_ACCESS_TIMEOUT        15000		// How long we should retry drive access (in ms)
 #define DRIVE_ACCESS_RETRIES        150			// How many times we should retry
 #define DRIVE_INDEX_MIN             0x00000080
 #define DRIVE_INDEX_MAX             0x000000C0
-#define MIN_DRIVE_SIZE              8			// Minimum size a drive must have, to be formattable (in MB)
-#define MIN_EXTRA_PART_SIZE         (1024*1024)	// Minimum size of the extra partition, in bytes
-#define MIN_EXT_SIZE                (256*1024*1024)	// Minimum size we allow for ext formatting
+#define MIN_DRIVE_SIZE              (8 * MB)	// Minimum size a drive must have, to be formattable
+#define MIN_EXTRA_PART_SIZE         (1 * MB)	// Minimum size of the extra partition, in bytes
+#define MIN_EXT_SIZE                (256 * MB)	// Minimum size we allow for ext formatting
 #define MAX_DRIVES                  (DRIVE_INDEX_MAX - DRIVE_INDEX_MIN)
 #define MAX_TOOLTIPS                128
 #define MAX_SIZE_SUFFIXES           6			// bytes, KB, MB, GB, TB, PB
@@ -76,11 +85,13 @@
 #define MAX_PARTITIONS              16			// Maximum number of partitions we handle
 #define MAX_ESP_TOGGLE              8			// Maximum number of entries we record to toggle GPT ESP back and forth
 #define MAX_IGNORE_USB              8			// Maximum number of USB drives we want to ignore
-#define MAX_ISO_TO_ESP_SIZE         1024		// Maximum size we allow for the ISO → ESP option (in MB)
-#define MAX_DEFAULT_LIST_CARD_SIZE  200			// Size above which we don't list a card without enable HDD or Alt-F (in GB)
-#define MAX_SECTORS_TO_CLEAR        128			// nb sectors to zap when clearing the MBR/GPT (must be >34)
+#define MAX_ISO_TO_ESP_SIZE         (1 * GB)	// Maximum size we allow for the ISO → ESP option
+#define MAX_DEFAULT_LIST_CARD_SIZE  (500 * GB)	// Size above which we don't list a card without enable HDD or Alt-F
+#define MAX_SECTORS_TO_CLEAR        (8 * MB / 512)	// Sectors to zap when clearing the MBR/GPT (must be >34)
+#define MAX_PE_SIZE                 (256 * MB)	// Maximum size of any PE file (UEFI bootloader) we want to process
 #define MAX_USERNAME_LENGTH         128			// Maximum size we'll accept for a WUE specified username
 #define MAX_WININST                 4			// Max number of install[.wim|.esd] we can handle on an image
+#define MAX_MARKER                  80.0f		// Max number of '+' signs we display for progress
 #define MBR_UEFI_MARKER             0x49464555	// 'U', 'E', 'F', 'I', as a 32 bit little endian longword
 #define MORE_INFO_URL               0xFFFF
 #define PROJECTED_SIZE_RATIO        110			// Percentage by which we inflate projected_size to prevent persistence overflow
@@ -98,14 +109,15 @@
 #define BADBLOCK_PATTERN_SLC        {0x00, 0xff, 0x55, 0xaa}
 #define BADCLOCK_PATTERN_MLC        {0x00, 0xff, 0x33, 0xcc}
 #define BADBLOCK_PATTERN_TLC        {0x00, 0xff, 0x1c71c7, 0xe38e38}
-#define BADBLOCK_BLOCK_SIZE         (512 * 1024)
-#define LARGE_FAT32_SIZE            (32 * 1073741824LL)	// Size at which we need to use fat32format
+#define BADBLOCK_BLOCK_SIZE         (512 * KB)
+#define LARGE_FAT32_SIZE            (32 * GB)	// Size at which we need to use fat32format
 #define UDF_FORMAT_SPEED            3.1f		// Speed estimate at which we expect UDF drives to be formatted (GB/s)
 #define UDF_FORMAT_WARN             20			// Duration (in seconds) above which we warn about long UDF formatting times
-#define MAX_FAT32_SIZE              2.0f		// Threshold above which we disable FAT32 formatting (in TB)
+#define MAX_FAT32_SIZE              (2 * TB)	// Threshold above which we disable FAT32 formatting
 #define FAT32_CLUSTER_THRESHOLD     1.011f		// For FAT32, cluster size changes don't occur at power of 2 boundaries but slightly above
-#define DD_BUFFER_SIZE              (32 * 1024 * 1024)	// Minimum size of buffer to use for DD operations
+#define DD_BUFFER_SIZE              (32 * MB)	// Minimum size of buffer to use for DD operations
 #define UBUFFER_SIZE                4096
+#define ISO_BUFFER_SIZE             (64 * KB)	// Buffer size used for ISO data extraction
 #define RSA_SIGNATURE_SIZE          256
 #define CBN_SELCHANGE_INTERNAL      (CBN_SELCHANGE + 256)
 #if defined(RUFUS_TEST)
@@ -118,14 +130,31 @@
 #define FILES_DIR                   APPLICATION_NAME
 #define FIDO_VERSION                "z1"
 #define WPPRECORDER_MORE_INFO_URL   "https://github.com/pbatard/rufus/wiki/FAQ#bsods-with-windows-to-go-drives-created-from-windows-10-1809-isos"
-#define SEVENZIP_URL                "https://7-zip.org/"
 // Generated by following https://randomascii.wordpress.com/2013/03/09/symbols-the-microsoft-way/
 #define DISKCOPY_URL                "https://msdl.microsoft.com/download/symbols/diskcopy.dll/54505118173000/diskcopy.dll"
+#define DISKCOPY_HASH               "95fc0786f5bc0a6db5c0604b31ac18fbed0502a2c6858e5fb02a647983ae03c7"
 #define DISKCOPY_SIZE               0x16ee00
 #define DISKCOPY_IMAGE_OFFSET       0x66d8
 #define DISKCOPY_IMAGE_SIZE         0x168000
+#if defined(_M_AMD64)
+#define OSCDIMG_URL                 "https://msdl.microsoft.com/download/symbols/oscdimg.exe/688CABB065000/oscdimg.exe"
+#define OSCDIMG_HASH                "2000160b2c5044691b2f9a0ac308e5207f273d4880a572457af16d05886ba861"
+#elif defined(_M_IX86)
+#define OSCDIMG_URL                 "https://msdl.microsoft.com/download/symbols/oscdimg.exe/704FD1B760000/oscdimg.exe"
+#define OSCDIMG_HASH                "cbd6872265d44e88897905bdc47f7035d64ad1775ab890ea59db13ec92d867eb"
+#elif defined(_M_ARM64)
+#define OSCDIMG_URL                 "https://msdl.microsoft.com/download/symbols/oscdimg.exe/02633D8D66000/oscdimg.exe"
+#define OSCDIMG_HASH                "80c059815d82fca009841143a821f79c8ac78dba12bb63dc07842f1a2a552666"
+#elif defined(_M_ARM)
+#define OSCDIMG_URL                 "https://msdl.microsoft.com/download/symbols/oscdimg.exe/9CD825745F000/oscdimg.exe"
+#define OSCDIMG_HASH                "5ecd9956da589baa65806c884a55f9303ec6c6c559bdeb8afe00c72614a24c7a"
+#endif
 #define SYMBOL_SERVER_USER_AGENT    "Microsoft-Symbol-Server/10.0.22621.755"
 #define DEFAULT_ESP_MOUNT_POINT     "S:\\"
+// Per https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/microsoft-windows-shell-setup-useraccounts-localaccounts-localaccount-name
+// and https://learn.microsoft.com/en-us/previous-versions/cc722458(v=technet.10)#user-name-policies
+// Also add '&', even as it could be escaped, as it's just not worth the trouble...
+#define USERNAME_INVALID_CHARS      "/\\[]:;|=,+*?<>%@&\""
 #define IS_POWER_OF_2(x)            ((x != 0) && (((x) & ((x) - 1)) == 0))
 #define IGNORE_RETVAL(expr)         do { (void)(expr); } while(0)
 #ifndef ARRAYSIZE
@@ -137,48 +166,57 @@
 #define PERCENTAGE(percent, value)  ((1ULL * (percent) * (value)) / 100ULL)
 #define IsChecked(CheckBox_ID)      (IsDlgButtonChecked(hMainDialog, CheckBox_ID) == BST_CHECKED)
 #define MB_IS_RTL                   (right_to_left_mode?MB_RTLREADING|MB_RIGHT:0)
-#define CHECK_FOR_USER_CANCEL       if (IS_ERROR(FormatStatus) && (SCODE_CODE(FormatStatus) == ERROR_CANCELLED)) goto out
+#define CHECK_FOR_USER_CANCEL       if (IS_ERROR(ErrorStatus) && (SCODE_CODE(ErrorStatus) == ERROR_CANCELLED)) goto out
 // Bit masks used for the display of additional image options in the UI
 #define IMOP_WINTOGO                0x01
 #define IMOP_PERSISTENCE            0x02
 
 #define ComboBox_GetCurItemData(hCtrl) ComboBox_GetItemData(hCtrl, ComboBox_GetCurSel(hCtrl))
 
-#define safe_free(p) do {free((void*)p); p = NULL;} while(0)
-#define safe_mm_free(p) do {_mm_free((void*)p); p = NULL;} while(0)
-#define safe_min(a, b) min((size_t)(a), (size_t)(b))
-#define safe_strcp(dst, dst_max, src, count) do {memcpy(dst, src, safe_min(count, dst_max)); \
-	((char*)(dst))[safe_min(count, dst_max)-1] = 0;} while(0)
-#define safe_strcpy(dst, dst_max, src) safe_strcp(dst, dst_max, src, safe_strlen(src)+1)
+#define safe_free(p) do { free((void*)p); p = NULL; } while(0)
+#define safe_mm_free(p) do { _mm_free((void*)p); p = NULL; } while(0)
+static __inline void safe_strcp(char* dst, const size_t dst_max, const char* src, const size_t count) {
+	memmove(dst, src, min(count, dst_max));
+	if (dst != NULL) dst[min(count, dst_max) - 1] = 0;
+}
+#define safe_strcpy(dst, dst_max, src) safe_strcp(dst, dst_max, src, safe_strlen(src) + 1)
 #define static_strcpy(dst, src) safe_strcpy(dst, sizeof(dst), src)
-#define safe_strncat(dst, dst_max, src, count) strncat(dst, src, safe_min(count, (dst_max) - safe_strlen(dst) - 1))
-#define safe_strcat(dst, dst_max, src) safe_strncat(dst, dst_max, src, safe_strlen(src)+1)
+#define safe_strcat(dst, dst_max, src) strncat_s(dst, dst_max, src, _TRUNCATE)
 #define static_strcat(dst, src) safe_strcat(dst, sizeof(dst), src)
-#define safe_strcmp(str1, str2) strcmp(((str1==NULL)?"<NULL>":str1), ((str2==NULL)?"<NULL>":str2))
-#define safe_strstr(str1, str2) strstr(((str1==NULL)?"<NULL>":str1), ((str2==NULL)?"<NULL>":str2))
-#define safe_stricmp(str1, str2) _stricmp(((str1==NULL)?"<NULL>":str1), ((str2==NULL)?"<NULL>":str2))
-#define safe_strncmp(str1, str2, count) strncmp(((str1==NULL)?"<NULL>":str1), ((str2==NULL)?"<NULL>":str2), count)
-#define safe_strnicmp(str1, str2, count) _strnicmp(((str1==NULL)?"<NULL>":str1), ((str2==NULL)?"<NULL>":str2), count)
-#define safe_closehandle(h) do {if ((h != INVALID_HANDLE_VALUE) && (h != NULL)) {CloseHandle(h); h = INVALID_HANDLE_VALUE;}} while(0)
-#define safe_release_dc(hDlg, hDC) do {if ((hDC != INVALID_HANDLE_VALUE) && (hDC != NULL)) {ReleaseDC(hDlg, hDC); hDC = NULL;}} while(0)
-#define safe_sprintf(dst, count, ...) do {_snprintf(dst, count, __VA_ARGS__); (dst)[(count)-1] = 0; } while(0)
+#define safe_strcmp(str1, str2) strcmp(((str1 == NULL) ? "<NULL>" : str1), ((str2 == NULL) ? "<NULL>" : str2))
+#define safe_strstr(str1, str2) strstr(((str1 == NULL) ? "<NULL>" : str1), ((str2 == NULL) ? "<NULL>" : str2))
+#define safe_stricmp(str1, str2) _stricmp(((str1 == NULL) ? "<NULL>" : str1), ((str2 == NULL) ? "<NULL>" : str2))
+#define safe_strncmp(str1, str2, count) strncmp(((str1 == NULL) ? "<NULL>" : str1), ((str2 == NULL) ? "<NULL>" : str2), count)
+#define safe_strnicmp(str1, str2, count) _strnicmp(((str1 == NULL) ? "<NULL>" : str1), ((str2 == NULL) ? "<NULL>" : str2), count)
+#define safe_closehandle(h) do { if ((h != INVALID_HANDLE_VALUE) && (h != NULL)) { CloseHandle(h); h = INVALID_HANDLE_VALUE; } } while(0)
+#define safe_release_dc(hDlg, hDC) do { if ((hDC != INVALID_HANDLE_VALUE) && (hDC != NULL)) { ReleaseDC(hDlg, hDC); hDC = NULL; } } while(0)
+#define safe_delete_object(hObj) do { if (hObj != NULL) { DeleteObject(hObj); hObj = NULL; } } while(0)
+#define safe_destroy_icon(hIcon) do { if (hIcon != NULL) { DestroyIcon(hIcon); hIcon = NULL; } } while(0)
+#define safe_destroy_imagelist(hImageList) do { if (hImageList != NULL) { ImageList_Destroy(hImageList); hImageList = NULL; } } while(0)
+#define safe_destroy_imagelist_from_toolbar(hToolbar) do { if (hToolbar != NULL) {                     \
+	HIMAGELIST _hImageList = (HIMAGELIST)SendMessage(hToolbar, TB_GETIMAGELIST, (WPARAM)0, (LPARAM)0); \
+	safe_destroy_imagelist(_hImageList); } } while(0)
+#define safe_sprintf(dst, count, ...) do { size_t _count = count; char* _dst = dst; _snprintf_s(_dst, _count, _TRUNCATE, __VA_ARGS__); \
+	if (_dst != NULL) _dst[(_count) - 1] = 0; } while(0)
 #define static_sprintf(dst, ...) safe_sprintf(dst, sizeof(dst), __VA_ARGS__)
-#define safe_atoi(str) ((((char*)(str))==NULL)?0:atoi(str))
-#define safe_strlen(str) ((((char*)(str))==NULL)?0:strlen(str))
-#define safe_strdup(str) ((((char*)(str))==NULL)?NULL:_strdup(str))
-#if defined(_MSC_VER)
+#define safe_atoi(str) ((((char*)(str))==NULL) ? 0 : atoi(str))
+#define safe_strlen(str) ((((char*)(str))==NULL) ? 0 : strlen(str))
+#define safe_strdup(str) ((((char*)(str))==NULL) ? NULL : _strdup(str))
 #define safe_vsnprintf(buf, size, format, arg) _vsnprintf_s(buf, size, _TRUNCATE, format, arg)
-#else
-#define safe_vsnprintf vsnprintf
-#endif
+#define safe_strtolower(str) do { if (str != NULL) CharLowerA(str); } while(0)
+#define safe_strtoupper(str) do { if (str != NULL) CharUpperA(str); } while(0)
 static __inline void static_repchr(char* p, char s, char r) {
 	if (p != NULL) while (*p != 0) { if (*p == s) *p = r; p++; }
 }
 #define to_unix_path(str) static_repchr(str, '\\', '/')
 #define to_windows_path(str) static_repchr(str, '/', '\\')
+#define if_assert_fails(cond) assert(cond); if (!(cond))
+#define if_assert_succeeds(cond) assert(cond); if ((cond))
 
 extern void uprintf(const char *format, ...);
 extern void uprintfs(const char *str);
+extern void wuprintf(const wchar_t* format, ...);
+extern void uprint_progress(uint64_t cur_value, uint64_t max_value);
 #define vuprintf(...) do { if (verbose) uprintf(__VA_ARGS__); } while(0)
 #define vvuprintf(...) do { if (verbose > 1) uprintf(__VA_ARGS__); } while(0)
 #define suprintf(...) do { if (!bSilent) uprintf(__VA_ARGS__); } while(0)
@@ -211,13 +249,7 @@ enum user_message_type {
 };
 
 /* Custom notifications */
-enum notification_type {
-	MSG_INFO,
-	MSG_WARNING,
-	MSG_ERROR,
-	MSG_QUESTION,
-	MSG_WARNING_QUESTION
-};
+#define MB_CLOSE 0x0F
 typedef INT_PTR (CALLBACK *Callback_t)(HWND, UINT, WPARAM, LPARAM);
 typedef struct {
 	WORD id;
@@ -260,6 +292,7 @@ enum action_type {
 	OP_FILE_COPY,
 	OP_PATCH,
 	OP_FINALIZE,
+	OP_EXTRACT_ZIP,
 	OP_MAX
 };
 
@@ -307,18 +340,17 @@ enum image_option_type {
 	IMOP_MAX
 };
 
-enum hash_type {
-	HASH_MD5 = 0,
-	HASH_SHA1,
-	HASH_SHA256,
-	HASH_SHA512,
-	HASH_MAX
-};
-
 enum file_io_type {
 	FILE_IO_READ = 0,
 	FILE_IO_WRITE,
 	FILE_IO_APPEND
+};
+
+enum EFI_BOOT_TYPE {
+	EBT_MAIN = 0,
+	EBT_GRUB,
+	EBT_MOKMANAGER,
+	EBT_BOOTMGR
 };
 
 /* Special handling for old .c32 files we need to replace */
@@ -343,8 +375,11 @@ enum file_io_type {
 #define HAS_WINPE(r)        (((r.winpe & WINPE_I386) == WINPE_I386)||((r.winpe & WINPE_AMD64) == WINPE_AMD64)||((r.winpe & WINPE_MININT) == WINPE_MININT))
 #define HAS_WINDOWS(r)      (HAS_BOOTMGR(r) || (r.uses_minint) || HAS_WINPE(r))
 #define HAS_WIN7_EFI(r)     ((r.has_efi == 1) && HAS_WININST(r))
+#define HAS_FATLESS_GRUB(r) ((r.has_grub2 & 0x80) && !(r.has_grub2_fs & 0x1))
+#define HAS_NTFSLESS_GRUB(r)((r.has_grub2 & 0x80) && !(r.has_grub2_fs & 0x4))
 #define IS_WINDOWS_1X(r)    (r.has_bootmgr_efi && (r.win_version.major >= 10))
 #define IS_WINDOWS_11(r)    (r.has_bootmgr_efi && (r.win_version.major >= 11))
+#define IS_FAT32_COMPAT(r)  (((r.has_4GB_file == 0 && !HAS_FATLESS_GRUB(r)) || (r.has_4GB_file == 0x11 && allow_dual_uefi_bios)) && !r.needs_ntfs)
 #define HAS_EFI_IMG(r)      (r.efi_img_path[0] != 0)
 #define IS_DD_BOOTABLE(r)   (r.is_bootable_img > 0)
 #define IS_DD_ONLY(r)       ((r.is_bootable_img > 0) && (!r.is_iso || r.disable_iso))
@@ -364,7 +399,14 @@ typedef struct {
 	uint16_t revision;
 } winver_t;
 
-/* We can't use the Microsoft enums as we want to have RISC-V */
+/*
+ * We can't use the Microsoft enums as we want to have RISC-V and LoongArch
+ * and we also translate these to IDR_BASE + Value for resource items, which,
+ * if we were to use the Microsoft IMAGE_FILE_MACHINE constants, would force
+ * us to leave a 65536 sized gap between bases in order to properly map
+ * 0x8664 (x86_64), 0xaa64 (ARM64) and so on...
+ * NB: When editing this, make sure to also update the values in resource.h!
+ */
 enum ArchType {
 	ARCH_UNKNOWN = 0,
 	ARCH_X86_32,
@@ -372,12 +414,16 @@ enum ArchType {
 	ARCH_ARM_32,
 	ARCH_ARM_64,
 	ARCH_IA_64,
-	ARCH_RISCV_32,
 	ARCH_RISCV_64,
-	ARCH_RISCV_128,
+	ARCH_LOONGARCH_64,
 	ARCH_EBC,
 	ARCH_MAX
 };
+
+typedef struct {
+	uint8_t type;
+	char path[64];
+} efi_boot_entry_t; 
 
 typedef struct {
 	char label[192];					// 3*64 to account for UTF-8
@@ -385,10 +431,9 @@ typedef struct {
 	char cfg_path[128];					// path to the ISO's isolinux.cfg
 	char reactos_path[128];				// path to the ISO's freeldr.sys or setupldr.sys
 	char wininst_path[MAX_WININST][64];	// path to the Windows install image(s)
-	char efi_boot_path[ARCH_MAX][30];	// paths of detected UEFI bootloaders
+	efi_boot_entry_t efi_boot_entry[64];// types and paths of detected UEFI bootloaders
 	char efi_img_path[128];				// path to an efi.img file
 	uint64_t image_size;
-	uint64_t archive_size;
 	uint64_t projected_size;
 	int64_t mismatch_size;
 	uint32_t wininst_version;
@@ -400,10 +445,11 @@ typedef struct {
 	BOOLEAN rh8_derivative;
 	uint16_t winpe;
 	uint16_t has_efi;
+	uint8_t has_secureboot_bootloader;
 	uint8_t has_md5sum;
 	uint8_t wininst_index;
 	uint8_t has_symlinks;
-	BOOLEAN has_4GB_file;
+	uint8_t has_4GB_file;
 	BOOLEAN has_long_filename;
 	BOOLEAN has_deep_directories;
 	BOOLEAN has_bootmgr;
@@ -414,7 +460,9 @@ typedef struct {
 	BOOLEAN has_efi_syslinux;
 	BOOLEAN has_grub4dos;
 	uint8_t has_grub2;
+	uint8_t has_grub2_fs;
 	BOOLEAN has_compatresources_dll;
+	BOOLEAN has_panther_unattend;
 	BOOLEAN has_kolibrios;
 	BOOLEAN needs_syslinux_overwrite;
 	BOOLEAN needs_ntfs;
@@ -466,7 +514,7 @@ typedef struct {
  *   EXT_DECL(my_extensions, "default.std", __VA_GROUP__("*.std", "*.other"), __VA_GROUP__("Standard type", "Other Type"));
  * to define an 'ext_t my_extensions' variable initialized with the relevant attributes.
  */
-typedef struct ext_t {
+typedef struct {
 	size_t count;
 	const char* filename;
 	const char** extension;
@@ -480,6 +528,69 @@ typedef struct {
 	char** name;
 	uint32_t* address;	// 32-bit will do, as we're not dealing with >4GB DLLs...
 } dll_resolver_t;
+
+/* Alignment macro */
+#if defined(__GNUC__)
+#define ALIGNED(m) __attribute__ ((__aligned__(m)))
+#elif defined(_MSC_VER)
+#define ALIGNED(m) __declspec(align(m))
+#endif
+
+/* Hash definitions */
+enum hash_type {
+	HASH_MD5 = 0,
+	HASH_SHA1,
+	HASH_SHA256,
+	HASH_SHA512,
+	HASH_MAX
+};
+
+/* Blocksize for each hash algorithm - Must be a power of 2 */
+#define MD5_BLOCKSIZE       64
+#define SHA1_BLOCKSIZE      64
+#define SHA256_BLOCKSIZE    64
+#define SHA512_BLOCKSIZE    128
+#define MAX_BLOCKSIZE       SHA512_BLOCKSIZE
+
+/* Hashsize for each hash algorithm */
+#define MD5_HASHSIZE        16
+#define SHA1_HASHSIZE       20
+#define SHA256_HASHSIZE     32
+#define SHA512_HASHSIZE     64
+#define MAX_HASHSIZE        SHA512_HASHSIZE
+
+/* Context for the hash algorithms */
+typedef struct ALIGNED(64) {
+	uint8_t buf[MAX_BLOCKSIZE];
+	uint64_t state[8];
+	uint64_t bytecount;
+} HASH_CONTEXT;
+
+/* Certificate info */
+typedef struct {
+	char name[256];
+	uint8_t thumbprint[SHA1_HASHSIZE];
+} cert_info_t;
+
+/* Hash functions */
+typedef void hash_init_t(HASH_CONTEXT* ctx);
+typedef void hash_write_t(HASH_CONTEXT* ctx, const uint8_t* buf, size_t len);
+typedef void hash_final_t(HASH_CONTEXT* ctx);
+extern hash_init_t* hash_init[HASH_MAX];
+extern hash_write_t* hash_write[HASH_MAX];
+extern hash_final_t* hash_final[HASH_MAX];
+
+/* SBAT entry */
+typedef struct {
+	char* product;
+	uint32_t version;
+} sbat_entry_t;
+
+/* Certificate thumbprint list */
+typedef struct {
+	uint32_t count;
+	uint8_t list[0][SHA1_HASHSIZE];
+} thumbprint_list_t;
 
 #ifndef __VA_GROUP__
 #define __VA_GROUP__(...)  __VA_ARGS__
@@ -524,11 +635,11 @@ static __inline const char* GetArchName(USHORT uArch)
 	case IMAGE_FILE_MACHINE_I386:
 		return "x86";
 	case IMAGE_FILE_MACHINE_ARM64:
-		return "arm64";
+		return "ARM64";
 	case IMAGE_FILE_MACHINE_ARM:
-		return "arm";
+		return "ARM32";
 	default:
-		return "unknown";
+		return "Unknown";
 	}
 }
 
@@ -548,11 +659,14 @@ enum WindowsVersion {
 };
 
 typedef struct {
-	DWORD Major;
-	DWORD Minor;
-	DWORD Micro;
-	DWORD Nano;
+	WORD Major;
+	WORD Minor;
+	WORD Micro;
+	WORD Nano;
 } version_t;
+static __inline uint64_t version_to_uint64(version_t* ver) {
+	return (uint64_t)ver->Major << 48 | (uint64_t)ver->Minor << 32 | (uint64_t)ver->Micro << 16 | ver->Nano;
+}
 
 typedef struct {
 	DWORD Version;
@@ -574,16 +688,72 @@ typedef struct {
 #define UNATTEND_SET_USER                   0x00040
 #define UNATTEND_DISABLE_BITLOCKER          0x00080
 #define UNATTEND_FORCE_S_MODE               0x00100
-#define UNATTEND_DEFAULT_MASK               0x000FF
+#define UNATTEND_USE_MS2023_BOOTLOADERS     0x00200
+#define UNATTEND_APPLY_SKUSIPOLICY          0x00400
+#define UNATTEND_SILENT_INSTALL             0x00800
+#define UNATTEND_QOL_ENHANCEMENTS           0x01000
+#define UNATTEND_FULL_MASK                  0x01FFF
+#define UNATTEND_DEFAULT_MASK               0x016FF		// Mask of values that are persisted
 #define UNATTEND_WINDOWS_TO_GO              0x10000		// Special flag for Windows To Go
 
-#define UNATTEND_WINPE_SETUP_MASK           (UNATTEND_SECUREBOOT_TPM_MINRAM)
-#define UNATTEND_SPECIALIZE_DEPLOYMENT_MASK (UNATTEND_NO_ONLINE_ACCOUNT)
-#define UNATTEND_OOBE_SHELL_SETUP_MASK      (UNATTEND_NO_DATA_COLLECTION | UNATTEND_SET_USER)
+#define UNATTEND_WINPE_SETUP_MASK           (UNATTEND_SECUREBOOT_TPM_MINRAM | UNATTEND_SILENT_INSTALL)
+#define UNATTEND_SPECIALIZE_DEPLOYMENT_MASK (UNATTEND_NO_ONLINE_ACCOUNT | UNATTEND_QOL_ENHANCEMENTS)
+#define UNATTEND_OOBE_SHELL_SETUP_MASK      (UNATTEND_NO_DATA_COLLECTION | UNATTEND_SET_USER | UNATTEND_DUPLICATE_LOCALE | UNATTEND_SILENT_INSTALL)
 #define UNATTEND_OOBE_INTERNATIONAL_MASK    (UNATTEND_DUPLICATE_LOCALE)
-#define UNATTEND_OOBE_MASK                  (UNATTEND_OOBE_SHELL_SETUP_MASK | UNATTEND_OOBE_INTERNATIONAL_MASK | UNATTEND_DISABLE_BITLOCKER)
+#define UNATTEND_OOBE_MASK                  (UNATTEND_OOBE_SHELL_SETUP_MASK | UNATTEND_OOBE_INTERNATIONAL_MASK | UNATTEND_DISABLE_BITLOCKER | \
+                                             UNATTEND_USE_MS2023_BOOTLOADERS | UNATTEND_APPLY_SKUSIPOLICY | UNATTEND_QOL_ENHANCEMENTS)
 #define UNATTEND_OFFLINE_SERVICING_MASK     (UNATTEND_OFFLINE_INTERNAL_DRIVES | UNATTEND_FORCE_S_MODE)
 #define UNATTEND_DEFAULT_SELECTION_MASK     (UNATTEND_SECUREBOOT_TPM_MINRAM | UNATTEND_NO_ONLINE_ACCOUNT | UNATTEND_OFFLINE_INTERNAL_DRIVES)
+
+/* Used with ListDirectoryContent */
+#define LIST_DIR_TYPE_FILE			0x01
+#define LIST_DIR_TYPE_DIRECTORY		0x02
+#define LIST_DIR_TYPE_RECURSIVE		0x80
+
+/* Hash tables */
+typedef struct {
+	uint32_t used;
+	char* str;
+	void* data;
+} htab_entry;
+typedef struct {
+	htab_entry* table;
+	uint32_t size;
+	uint32_t filled;
+} htab_table;
+#define HTAB_EMPTY { NULL, 0, 0 }
+extern BOOL htab_create(uint32_t nel, htab_table* htab);
+extern void htab_destroy(htab_table* htab);
+extern uint32_t htab_hash(char* str, htab_table* htab);
+
+/* Basic String Array */
+typedef struct {
+	char** String;
+	uint32_t Index;		// Current array size
+	uint32_t Max;		// Maximum array size
+} StrArray;
+extern void StrArrayCreate(StrArray* arr, uint32_t initial_size);
+extern int32_t StrArrayAdd(StrArray* arr, const char* str, BOOL);
+extern int32_t StrArrayAddUnique(StrArray* arr, const char* str, BOOL);
+extern int32_t StrArrayFind(StrArray* arr, const char* str);
+extern void StrArrayClear(StrArray* arr);
+extern void StrArrayDestroy(StrArray* arr);
+#define IsStrArrayEmpty(arr) (arr.Index == 0)
+
+// Options for the custom selection dialog
+#define SELECTION_NEEDS_ALL_TO_PROCEED 1
+#define SELECTION_USE_WARNING_ICON     2
+typedef struct {
+	int style;
+	int mask;
+	int flags;
+	int username_index;
+	int edition_index;
+	int regional_index;
+	int privacy_index;
+	StrArray choices;
+	StrArray tooltips;
+} selection_dialog_options_t;
 
 /*
  * Globals
@@ -593,9 +763,9 @@ extern RUFUS_IMG_REPORT img_report;
 extern HINSTANCE hMainInstance;
 extern HWND hMainDialog, hLogDialog, hStatus, hDeviceList, hCapacity, hImageOption;
 extern HWND hPartitionScheme, hTargetSystem, hFileSystem, hClusterSize, hLabel, hBootType;
-extern HWND hNBPasses, hLog, hInfo, hProgress, hDiskID;
+extern HWND hNBPasses, hLog, hInfo, hProgress;
 extern WORD selected_langid;
-extern DWORD FormatStatus, DownloadStatus, MainThreadId, LastWriteError;
+extern DWORD ErrorStatus, DownloadStatus, MainThreadId, LastWriteError;
 extern BOOL use_own_c32[NB_OLD_C32], detect_fakes, op_in_progress, right_to_left_mode;
 extern BOOL allow_dual_uefi_bios, large_drive, usb_debug;
 extern uint8_t image_options, *pe256ssp;
@@ -607,16 +777,20 @@ extern size_t ubuffer_pos;
 extern const int nb_steps[FS_MAX];
 extern float fScale;
 extern windows_version_t WindowsVersion;
+extern sbat_entry_t* sbat_entries;
+extern thumbprint_list_t *sb_active_certs, *sb_revoked_certs;
 extern int dialog_showing, force_update, fs_type, boot_type, partition_type, target_type;
-extern unsigned long syslinux_ldlinux_len[2];
 extern char ubuffer[UBUFFER_SIZE], embedded_sl_version_str[2][12];
 extern char szFolderPath[MAX_PATH], app_dir[MAX_PATH], temp_dir[MAX_PATH], system_dir[MAX_PATH];
 extern char sysnative_dir[MAX_PATH], app_data_dir[MAX_PATH], *image_path, *fido_url;
+extern StrArray modified_files;
 
 /*
  * Shared prototypes
  */
 extern void GetWindowsVersion(windows_version_t* WindowsVersion);
+extern const char* GetEditionName(DWORD ProductType);
+extern int GetEditions(StrArray* version_name, StrArray* version_index);
 extern version_t* GetExecutableVersion(const char* path);
 extern const char* WindowsErrorString(void);
 extern void DumpBufferHex(void *buf, size_t size);
@@ -628,11 +802,12 @@ extern void PrintStatusInfo(BOOL info, BOOL debug, unsigned int duration, int ms
 extern void UpdateProgress(int op, float percent);
 extern void _UpdateProgressWithInfo(int op, int msg, uint64_t processed, uint64_t total, BOOL force);
 #define UpdateProgressWithInfo(op, msg, processed, total) _UpdateProgressWithInfo(op, msg, processed, total, FALSE)
+#define UpdateProgressWithInfoUpTo(upto, op, msg, processed, total) _UpdateProgressWithInfo(op, msg, (processed) * (upto), (total) * 100, FALSE)
 #define UpdateProgressWithInfoForce(op, msg, processed, total) _UpdateProgressWithInfo(op, msg, processed, total, TRUE)
 #define UpdateProgressWithInfoInit(hProgressDialog, bNoAltMode) UpdateProgressWithInfo(OP_INIT, (int)bNoAltMode, (uint64_t)(uintptr_t)hProgressDialog, 0);
 extern const char* StrError(DWORD error_code, BOOL use_default_locale);
 extern char* GuidToString(const GUID* guid, BOOL bDecorated);
-extern GUID* StringToGuid(const char* str);
+extern GUID StringToGuid(const char* str);
 extern char* SizeToHumanReadable(uint64_t size, BOOL copy_to_log, BOOL fake_units);
 extern char* TimestampToHumanReadable(uint64_t ts);
 extern HWND MyCreateDialog(HINSTANCE hInstance, int Dialog_ID, HWND hWndParent, DLGPROC lpDialogFunc);
@@ -640,48 +815,52 @@ extern INT_PTR MyDialogBox(HINSTANCE hInstance, int Dialog_ID, HWND hWndParent, 
 extern void CenterDialog(HWND hDlg, HWND hParent);
 extern void ResizeMoveCtrl(HWND hDlg, HWND hCtrl, int dx, int dy, int dw, int dh, float scale);
 extern void ResizeButtonHeight(HWND hDlg, int id);
-extern void CreateStatusBar(void);
+extern void CreateStatusBar(HFONT* hFont);
 extern void CreateStaticFont(HDC hDC, HFONT* hFont, BOOL underlined);
+extern void SetHyperLinkFont(HWND hWnd, HDC hDC, HFONT* hFont, BOOL underlined);
 extern void SetTitleBarIcon(HWND hDlg);
 extern BOOL CreateTaskbarList(void);
 extern BOOL SetTaskbarProgressState(TASKBAR_PROGRESS_FLAGS tbpFlags);
 extern BOOL SetTaskbarProgressValue(ULONGLONG ullCompleted, ULONGLONG ullTotal);
 extern INT_PTR CreateAboutBox(void);
-extern BOOL CreateTooltip(HWND hControl, const char* message, int duration);
-extern void DestroyTooltip(HWND hWnd);
+extern BOOL CreateTooltipEx(HWND hDlg, HWND hControl, const char* message, int duration);
+#define CreateTooltip(hControl, message, duration) CreateTooltipEx(hMainDialog, hControl, message, duration)
+extern void PopTooltip(HWND hControl);
+extern void DestroyTooltip(HWND hControl);
 extern void DestroyAllTooltips(void);
-extern BOOL Notification(int type, const char* dont_display_setting, const notification_info* more_info, char* title, char* format, ...);
-extern int CustomSelectionDialog(int style, char* title, char* message, char** choices, int size, int mask, int username_index);
-#define SelectionDialog(title, message, choices, size) CustomSelectionDialog(BS_AUTORADIOBUTTON, title, message, choices, size, 1, -1)
+extern int NotificationEx(int type, const char* dont_display_setting, const notification_info* more_info, const char* title, const char* format, ...);
+#define Notification(type, title, ...) NotificationEx(type, NULL, NULL, title, __VA_ARGS__)
+extern int SelectionDialog(char* title, char* message, selection_dialog_options_t* options);
 extern void ListDialog(char* title, char* message, char** items, int size);
 extern SIZE GetTextSize(HWND hCtrl, char* txt);
 extern BOOL ExtractAppIcon(const char* filename, BOOL bSilent);
 extern BOOL ExtractDOS(const char* path);
 extern BOOL ExtractISO(const char* src_iso, const char* dest_dir, BOOL scan);
+extern BOOL ExtractZip(const char* src_zip, const char* dest_dir);
 extern int64_t ExtractISOFile(const char* iso, const char* iso_file, const char* dest_file, DWORD attributes);
-extern BOOL CopySKUSiPolicy(const char* drive_name);
-extern BOOL HasEfiImgBootLoaders(void);
-extern BOOL DumpFatDir(const char* path, int32_t cluster);
+extern uint32_t ReadISOFileToBuffer(const char* iso, const char* iso_file, uint8_t** buf);
+extern BOOL HasEfiImgBootLoaders(void* iso);
+extern BOOL DumpFatDir(void* iso, const char* path, int32_t cluster);
 extern BOOL InstallSyslinux(DWORD drive_index, char drive_letter, int fs);
 extern uint16_t GetSyslinuxVersion(char* buf, size_t buf_size, char** ext);
 extern BOOL SetAutorun(const char* path);
 extern char* FileDialog(BOOL save, char* path, const ext_t* ext, UINT* selected_ext);
 extern BOOL FileIO(enum file_io_type io_type, char* path, char** buffer, DWORD* size);
-extern unsigned char* GetResource(HMODULE module, char* name, char* type, const char* desc, DWORD* len, BOOL duplicate);
+extern uint8_t* GetResource(HMODULE module, char* name, char* type, const char* desc, DWORD* len, BOOL duplicate);
 extern DWORD GetResourceSize(HMODULE module, char* name, char* type, const char* desc);
-extern DWORD RunCommandWithProgress(const char* cmdline, const char* dir, BOOL log, int msg);
-#define RunCommand(cmd, dir, log) RunCommandWithProgress(cmd, dir, log, 0)
+extern DWORD RunCommandWithProgress(const char* cmdline, const char* dir, BOOL log, int msg, const char* pattern);
+#define RunCommand(cmd, dir, log) RunCommandWithProgress(cmd, dir, log, 0, NULL)
 extern BOOL CompareGUID(const GUID *guid1, const GUID *guid2);
 extern BOOL MountRegistryHive(const HKEY key, const char* pszHiveName, const char* pszHivePath);
 extern BOOL UnmountRegistryHive(const HKEY key, const char* pszHiveName);
-extern BOOL SetLGP(BOOL bRestore, BOOL* bExistingKey, const char* szPath, const char* szPolicy, DWORD dwValue);
+extern BOOL SetNDTA(BOOL bRestore, BOOL* bExistingKey, DWORD dwValue);
 extern LONG GetEntryWidth(HWND hDropDown, const char* entry);
 extern uint64_t DownloadToFileOrBufferEx(const char* url, const char* file, const char* user_agent,
 	BYTE** buffer, HWND hProgressDialog, BOOL bTaskBarProgress);
 #define DownloadToFileOrBuffer(url, file, buffer, hProgressDialog, bTaskBarProgress) \
 	DownloadToFileOrBufferEx(url, file, NULL, buffer, hProgressDialog, bTaskBarProgress)
-extern DWORD DownloadSignedFile(const char* url, const char* file, HWND hProgressDialog, BOOL PromptOnError);
-extern HANDLE DownloadSignedFileThreaded(const char* url, const char* file, HWND hProgressDialog, BOOL bPromptOnError);
+extern DWORD DownloadSignedFile(const char* url, const char* file, HWND hProgressDialog, BOOL bPromptOnError, BOOL bSaveSig);
+extern HANDLE DownloadSignedFileThreaded(const char* url, const char* file, HWND hProgressDialog, BOOL bPromptOnError, BOOL bSaveSig);
 extern INT_PTR CALLBACK UpdateCallback(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
 extern void SetFidoCheck(void);
 extern BOOL SetUpdateCheck(void);
@@ -691,7 +870,9 @@ extern BOOL DownloadISO(void);
 extern BOOL IsDownloadable(const char* url);
 extern BOOL IsShown(HWND hDlg);
 extern uint32_t read_file(const char* path, uint8_t** buf);
+extern uint32_t read_signed_file(const char* path, uint8_t** buf);
 extern uint32_t write_file(const char* path, const uint8_t* buf, const uint32_t size);
+extern BOOL copy_signed_file(const char* src, const char* dst);
 extern char* get_token_data_file_indexed(const char* token, const char* filename, int index);
 #define get_token_data_file(token, filename) get_token_data_file_indexed(token, filename, 1)
 extern char* set_token_data_file(const char* token, const char* data, const char* filename);
@@ -699,15 +880,18 @@ extern char* get_token_data_buffer(const char* token, unsigned int n, const char
 extern char* insert_section_data(const char* filename, const char* section, const char* data, BOOL dos2unix);
 extern char* replace_in_token_data(const char* filename, const char* token, const char* src, const char* rep, BOOL dos2unix);
 extern char* replace_char(const char* src, const char c, const char* rep);
+extern void filter_chars(char* str, const char* rem, const char rep);
+extern void trim(char* str);
+extern char* remove_substr(const char* src, const char* sub);
 extern void parse_update(char* buf, size_t len);
 extern void* get_data_from_asn1(const uint8_t* buf, size_t buf_len, const char* oid_str, uint8_t asn1_type, size_t* data_len);
 extern int sanitize_label(char* label);
 extern int IsHDD(DWORD DriveIndex, uint16_t vid, uint16_t pid, const char* strid);
-extern char* GetSignatureName(const char* path, const char* country_code, BOOL bSilent);
+extern char* GetSignatureName(const char* path, const char* country_code, uint8_t* thumbprint, BOOL bSilent);
+extern int GetIssuerCertificateInfo(uint8_t* cert, cert_info_t* info);
 extern uint64_t GetSignatureTimeStamp(const char* path);
 extern LONG ValidateSignature(HWND hDlg, const char* path);
 extern BOOL ValidateOpensslSignature(BYTE* pbBuffer, DWORD dwBufferLen, BYTE* pbSignature, DWORD dwSigLen);
-extern BOOL ParseSKUSiPolicy(void);
 extern BOOL IsFontAvailable(const char* font_name);
 extern BOOL WriteFileWithRetry(HANDLE hFile, LPCVOID lpBuffer, DWORD nNumberOfBytesToWrite,
 	LPDWORD lpNumberOfBytesWritten, DWORD nNumRetries);
@@ -715,12 +899,18 @@ extern HANDLE CreateFileWithTimeout(LPCSTR lpFileName, DWORD dwDesiredAccess, DW
 	LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes,
 	HANDLE hTemplateFile, DWORD dwTimeOut);
 extern BOOL SetThreadAffinity(DWORD_PTR* thread_affinity, size_t num_threads);
+extern BOOL DetectSHA1Acceleration(void);
+extern BOOL DetectSHA256Acceleration(void);
 extern BOOL HashFile(const unsigned type, const char* path, uint8_t* sum);
-extern BOOL PE256File(const char* path, uint8_t* hash);
+extern BOOL PE256Buffer(uint8_t* buf, uint32_t len, uint8_t* hash);
+extern void UpdateMD5Sum(const char* dest_dir, const char* md5sum_name);
 extern BOOL HashBuffer(const unsigned type, const uint8_t* buf, const size_t len, uint8_t* sum);
+extern uint8_t* StringToHash(const char* str);
+extern BOOL FileMatchesHash(const char* path, const char* str);
+extern BOOL BufferMatchesHash(const uint8_t* buf, const size_t len, const char* str);
 extern BOOL IsFileInDB(const char* path);
-extern int IsBootloaderRevoked(const char* path);
-extern void PrintRevokedBootloaderInfo(void);
+extern BOOL IsSignedBySecureBootAuthority(uint8_t* buf, uint32_t len);
+extern int IsBootloaderRevoked(uint8_t* buf, uint32_t len);
 extern BOOL IsBufferInDB(const unsigned char* buf, const size_t len);
 #define printbits(x) _printbits(sizeof(x), &x, 0)
 #define printbitslz(x) _printbits(sizeof(x), &x, 1)
@@ -740,40 +930,21 @@ extern DWORD WaitForSingleObjectWithMessages(HANDLE hHandle, DWORD dwMillisecond
 extern HICON CreateMirroredIcon(HICON hiconOrg);
 extern HANDLE CreatePreallocatedFile(const char* lpFileName, DWORD dwDesiredAccess,
 	DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition,
-	DWORD dwFlagsAndAttributes, LONGLONG fileSize);
+	DWORD dwFlagsAndAttributes, LONGLONG llFileSize);
 extern uint32_t ResolveDllAddress(dll_resolver_t* resolver);
+extern sbat_entry_t* GetSbatEntries(char* sbatlevel);
+extern thumbprint_list_t* GetThumbprintEntries(char* thumbprints_txt);
+extern uint16_t GetPeArch(uint8_t* buf, uint32_t buf_len);
+extern uint8_t* GetPeSection(uint8_t* buf, uint32_t buf_len, const char* name, uint32_t* len);
+extern uint8_t* GetPeSignatureData(uint8_t* buf, uint32_t buf_len);
+extern uint8_t* RvaToPhysical(uint8_t* buf, uint32_t buf_len, uint32_t rva);
+extern uint32_t FindResourceRva(const wchar_t* name, uint8_t* root, uint8_t* dir, uint32_t* len);
+extern DWORD ListDirectoryContent(StrArray* arr, char* dir, uint8_t type);
+extern BOOL TakeOwnership(LPCSTR lpszOwnFile);
+extern enum ArchType MachineToArch(WORD machine);
 #define GetTextWidth(hDlg, id) GetTextSize(GetDlgItem(hDlg, id), NULL).cx
 
 DWORD WINAPI HashThread(void* param);
-
-/* Hash tables */
-typedef struct htab_entry {
-	uint32_t used;
-	char* str;
-	void* data;
-} htab_entry;
-typedef struct htab_table {
-	htab_entry *table;
-	uint32_t size;
-	uint32_t filled;
-} htab_table;
-#define HTAB_EMPTY {NULL, 0, 0}
-extern BOOL htab_create(uint32_t nel, htab_table* htab);
-extern void htab_destroy(htab_table* htab);
-extern uint32_t htab_hash(char* str, htab_table* htab);
-
-/* Basic String Array */
-typedef struct {
-	char**   String;
-	uint32_t Index;		// Current array size
-	uint32_t Max;		// Maximum array size
-} StrArray;
-extern void StrArrayCreate(StrArray* arr, uint32_t initial_size);
-extern int32_t StrArrayAdd(StrArray* arr, const char* str, BOOL );
-extern int32_t StrArrayFind(StrArray* arr, const char* str);
-extern void StrArrayClear(StrArray* arr);
-extern void StrArrayDestroy(StrArray* arr);
-#define IsStrArrayEmpty(arr) (arr.Index == 0)
 
 /*
  * typedefs for the function prototypes. Use the something like:
@@ -823,8 +994,13 @@ out:
 #define PF_TYPE_DECL(api, ret, proc, args)	PF_TYPE(api, ret, proc, args); PF_DECL(proc)
 #define PF_INIT(proc, name)					if (pf##proc == NULL) pf##proc = \
 	(proc##_t) GetProcAddress(GetLibraryHandle(#name), #proc)
+#define PF_INIT_ID(proc, name, id)			if (pf##proc == NULL) pf##proc = \
+	(proc##_t) GetProcAddress(GetLibraryHandle(#name), MAKEINTRESOURCEA(id))
 #define PF_INIT_OR_OUT(proc, name)			do {PF_INIT(proc, name);         \
 	if (pf##proc == NULL) {uprintf("Unable to locate %s() in '%s.dll': %s",  \
+	#proc, #name, WindowsErrorString()); goto out;} } while(0)
+#define PF_INIT_ID_OR_OUT(proc, name, id)	do {PF_INIT_ID(proc, name, id);  \
+	if (pf##proc == NULL) {uprintf("Unable to locate %s() in %s.dll: %s\n",  \
 	#proc, #name, WindowsErrorString()); goto out;} } while(0)
 #define PF_INIT_OR_SET_STATUS(proc, name)	do {PF_INIT(proc, name);         \
 	if ((pf##proc == NULL) && (NT_SUCCESS(status))) status = STATUS_PROCEDURE_NOT_FOUND; } while(0)
@@ -854,3 +1030,5 @@ out:
 #define ERROR_CANT_MOUNT_VOLUME        0x120C
 #define ERROR_BAD_SIGNATURE            0x120D
 #define ERROR_CANT_DOWNLOAD            0x120E
+
+#define RUFUS_ERROR(err)               (ERROR_SEVERITY_ERROR | FAC(FACILITY_STORAGE) | (err))
